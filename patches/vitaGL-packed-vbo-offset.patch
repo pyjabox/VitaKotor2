@@ -1,0 +1,47 @@
+diff --git a/source/custom_shaders.c b/source/custom_shaders.c
+index f1156e3..1ab2991 100644
+--- a/source/custom_shaders.c
++++ b/source/custom_shaders.c
+@@ -125 +125,2 @@ char vgl_file_cache_path[256];
+-#define handle_packed_vbo_attrib() \
++// Keep the wide VBO offset in the stream pointer; GXM's attribute offset is 16-bit.
++#define handle_packed_vbo_attrib(base) \
+@@ -127 +128 @@ char vgl_file_cache_path[256];
+-		attributes[i].offset = cur_vao->vertex_attrib_offsets[attr_idx]; \
++		attributes[i].offset = cur_vao->vertex_attrib_offsets[attr_idx] - (base); \
+@@ -373,0 +375,14 @@ typedef struct {
++static inline uint32_t get_packed_vbo_base(program *p) {
++	uint32_t base = 0;
++	GLboolean found = GL_FALSE;
++	for (int i = 0; i < p->attr_num; i++) {
++		uint8_t attr_idx = p->attr_map[i];
++		if ((cur_vao->vertex_attrib_state & (1 << attr_idx)) &&
++				(!found || cur_vao->vertex_attrib_offsets[attr_idx] < base)) {
++			base = cur_vao->vertex_attrib_offsets[attr_idx];
++			found = GL_TRUE;
++		}
++	}
++	return base;
++}
++
+@@ -842 +857,2 @@ void _glMultiDrawArrays_CustomShadersIMPL(SceGxmPrimitiveType gxm_p, uint16_t *i
+-			ptrs[0] = (void *)target_vbo->ptr + lowest * streams[0].stride;
++			uint32_t packed_vbo_base = get_packed_vbo_base(p);
++			ptrs[0] = (uint8_t *)target_vbo->ptr + packed_vbo_base + lowest * streams[0].stride;
+@@ -847 +863 @@ void _glMultiDrawArrays_CustomShadersIMPL(SceGxmPrimitiveType gxm_p, uint16_t *i
+-				handle_packed_vbo_attrib();
++				handle_packed_vbo_attrib(packed_vbo_base);
+@@ -1069 +1085,2 @@ GLboolean _glDrawArrays_CustomShadersIMPL(GLint first, GLsizei count, GLboolean
+-			ptrs[0] = (void *)target_vbo->ptr + first * streams[0].stride;
++			uint32_t packed_vbo_base = get_packed_vbo_base(p);
++			ptrs[0] = (uint8_t *)target_vbo->ptr + packed_vbo_base + first * streams[0].stride;
+@@ -1074 +1091 @@ GLboolean _glDrawArrays_CustomShadersIMPL(GLint first, GLsizei count, GLboolean
+-				handle_packed_vbo_attrib();
++				handle_packed_vbo_attrib(packed_vbo_base);
+@@ -1344 +1361,2 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
+-			ptrs[0] = (void *)target_vbo->ptr;
++			uint32_t packed_vbo_base = get_packed_vbo_base(p);
++			ptrs[0] = (uint8_t *)target_vbo->ptr + packed_vbo_base;
+@@ -1349 +1367 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
+-				handle_packed_vbo_attrib();
++				handle_packed_vbo_attrib(packed_vbo_base);
