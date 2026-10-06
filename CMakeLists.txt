@@ -72,6 +72,7 @@ add_executable(KOTOR2
   loader/ai_budget.c
   loader/ini_defaults.c
   loader/dxt_native.c
+  loader/minimp3_impl.c
   loader/autotest.c
   loader/glsl_prep.c
   loader/crash.c

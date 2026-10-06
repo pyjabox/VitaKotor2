@@ -45,6 +45,7 @@
 #include <string.h>
 
 #include "audio_mp3.h"
+#include "minimp3.h"
 #include "log.h"
 #include "bigalloc.h"
 
@@ -575,13 +576,22 @@ void audio_pcm_free(AudioPcm *p) {
  * Streaming keeps the decoder open and pulls frames on demand instead. The
  * elementary stream must stay alive and unmoved for the lifetime of the handle;
  * the caller owns it. */
+#define SW_LOOKAHEAD (16u * 1024u)
+
 struct AudioMp3Stream {
   SceAudiodecCtrl ctrl;
   SceAudiodecInfo info;
   const unsigned char *d;
   unsigned len, start, pos;
+  /* Bytes of d present so far: a stream can be opened while the rest of its
+   * file is still being read in (audio_patch.c). Written by the loading
+   * thread after the bytes, read here before them. */
+  volatile unsigned loaded;
   unsigned ch, rate;
   int      created, eos, errs;
+  /* No hardware decoder (all taken, or none would start): minimp3 on this
+   * thread instead, with its own state. */
+  mp3dec_t *sw;
   /* One decode call emits a whole granule pair, usually more than the caller
    * asked for; the remainder waits here rather than being decoded twice. */
   int16_t  carry[MP3_MAX_SAMPLES * 2];
@@ -607,7 +617,30 @@ int audio_mp3_stream_needs_hw(const void *data, unsigned len) {
 }
 
 AudioMp3Stream *audio_mp3_stream_open(const void *data, unsigned len, AudioPcm *fmt) {
+  return audio_mp3_stream_open_partial(data, len, len, 1, fmt);
+}
+
+int audio_mp3_stream_uses_hw(const AudioMp3Stream *s) { return s && s->created; }
+
+
+void audio_mp3_stream_set_loaded(AudioMp3Stream *s, unsigned loaded, int final) {
+  if (!s) return;
+  __sync_synchronize();                    /* the bytes before the count */
+  if (final) s->len = loaded;              /* the file ended early */
+  s->loaded = loaded < s->len ? loaded : s->len;
+}
+
+/* Bytes the decoder may read up to: everything once loaded reaches len. */
+static unsigned stream_limit(const AudioMp3Stream *s) {
+  unsigned lim = s->loaded;
+  __sync_synchronize();                    /* the count before the bytes */
+  return lim;
+}
+
+AudioMp3Stream *audio_mp3_stream_open_partial(const void *data, unsigned len, unsigned loaded, int use_hw,
+                                              AudioPcm *fmt) {
   if (!data || !len) return NULL;
+  if (loaded > len) loaded = len;
 
   /* RIFF first, and without touching the decoder library: the beds are ADPCM
    * and the whole point of streaming them is that they cost a block buffer
@@ -624,6 +657,7 @@ AudioMp3Stream *audio_mp3_stream_open(const void *data, unsigned len, AudioPcm *
       s->wav    = w;
       s->d      = (const unsigned char *)data;
       s->len    = len;
+      s->loaded = loaded;
       s->ch     = w.ch;
       s->rate   = w.rate;
       if (fmt) {
@@ -640,7 +674,7 @@ AudioMp3Stream *audio_mp3_stream_open(const void *data, unsigned len, AudioPcm *
     }
   }
 
-  if (!audio_mp3_init_library()) return NULL;   /* idempotent; sizes the pool */
+  if (use_hw && !audio_mp3_init_library()) use_hw = 0;   /* idempotent; sizes the pool */
 
   /* Reuse the header walk so duration/rate/channels match what the non-stream
    * path would have reported. */
@@ -661,7 +695,7 @@ AudioMp3Stream *audio_mp3_stream_open(const void *data, unsigned len, AudioPcm *
   AudioMp3Stream *s = (AudioMp3Stream *)calloc(1, sizeof *s);
   if (!s) return NULL;
 
-  s->d = d; s->len = len; s->start = (unsigned)off; s->pos = (unsigned)off;
+  s->d = d; s->len = len; s->loaded = loaded; s->start = (unsigned)off; s->pos = (unsigned)off;
   s->ch = ch; s->rate = rate;
 
   s->info.mp3.size    = sizeof(SceAudiodecInfoMp3);
@@ -673,14 +707,17 @@ AudioMp3Stream *audio_mp3_stream_open(const void *data, unsigned len, AudioPcm *
   s->ctrl.maxPcmSize  = MP3_MAX_PCM;
   s->ctrl.wordLength  = SCE_AUDIODEC_WORD_LENGTH_16BITS;
 
-  int r = sceAudiodecCreateDecoder(&s->ctrl, SCE_AUDIODEC_TYPE_MP3);
-  if (r < 0) {
-    log_printf("[snd] stream CreateDecoder failed 0x%08X (ch=%u ver=%u rate=%u)",
-               (unsigned)r, ch, ver, rate);
-    free(s);
-    return NULL;
+  int r = use_hw ? sceAudiodecCreateDecoder(&s->ctrl, SCE_AUDIODEC_TYPE_MP3) : -1;
+  if (r >= 0) {
+    s->created = 1;
+  } else {
+    if (use_hw)
+      log_printf("[music] stream CreateDecoder failed 0x%08X (ch=%u ver=%u rate=%u) -- software decoder",
+                 (unsigned)r, ch, ver, rate);
+    s->sw = (mp3dec_t *)malloc(sizeof *s->sw);
+    if (!s->sw) { free(s); return NULL; }
+    mp3dec_init(s->sw);
   }
-  s->created = 1;
 
   if (fmt) {
     fmt->pcm      = NULL;                  /* streaming: no flat buffer */
@@ -690,6 +727,17 @@ AudioMp3Stream *audio_mp3_stream_open(const void *data, unsigned len, AudioPcm *
     fmt->ms       = probe.ms;
   }
   return s;
+}
+
+/* Is the next block (or the end of the data) within the bytes loaded? */
+static int wav_block_ready(const AudioMp3Stream *s) {
+  unsigned lim = stream_limit(s);
+  if (lim >= s->len) return 1;
+  const WavInfo *w = &s->wav;
+  unsigned bsz = (w->afmt == 17) ? w->balign : (1024 * w->ch * (w->bits / 8));
+  unsigned end = w->data_off + (s->blk + 1) * bsz;
+  if (end > w->data_off + w->data_len) end = w->data_off + w->data_len;
+  return end <= lim;
 }
 
 /* One block (ADPCM) or one chunk (plain PCM) into s->wbuf. 0 = nothing left. */
@@ -728,6 +776,7 @@ unsigned audio_mp3_stream_read(AudioMp3Stream *s, int16_t *dst, unsigned frames)
         continue;
       }
       if (s->eos) break;
+      if (!wav_block_ready(s)) break;      /* still being read in: wait, not EOS */
       unsigned n = wav_fill_block(s);
       if (!n) { s->eos = 1; break; }
       s->wbuf_n   = n * s->ch;
@@ -736,9 +785,50 @@ unsigned audio_mp3_stream_read(AudioMp3Stream *s, int16_t *dst, unsigned frames)
     return got / s->ch;
   }
 
-  if (!s->created) return 0;
+  if (!s->created && !s->sw) return 0;
   unsigned want = frames * s->ch;          /* int16 units */
   unsigned got = 0;
+
+  if (s->sw) {
+    while (got < want) {
+      if (s->carry_off < s->carry_n) {
+        unsigned take = s->carry_n - s->carry_off;
+        if (take > want - got) take = want - got;
+        memcpy(dst + got, s->carry + s->carry_off, take * sizeof(int16_t));
+        s->carry_off += take;
+        got += take;
+        continue;
+      }
+      if (s->eos) break;
+      /* Until it has locked on, minimp3 confirms a sync over several frames,
+       * so while the file is still being read in it decodes only with
+       * SW_LOOKAHEAD bytes ahead; at the loaded edge it waits, not EOS. */
+      unsigned lim = stream_limit(s), end = lim < s->len ? lim : s->len;
+      unsigned avail = s->pos < end ? end - s->pos : 0;
+      if (lim < s->len && avail < SW_LOOKAHEAD) break;
+      if (avail < 4) { s->eos = 1; break; }
+      mp3dec_frame_info_t fi;
+      int n = mp3dec_decode_frame(s->sw, s->d + s->pos, (int)avail, s->carry, &fi);
+      if (fi.frame_bytes <= 0) {               /* nothing more it can find */
+        if (lim < s->len) break;
+        s->eos = 1;
+        break;
+      }
+      s->pos += (unsigned)fi.frame_bytes;
+      if (n <= 0) continue;                    /* skipped junk, or a frame without PCM yet */
+      if ((unsigned)fi.channels == s->ch) {
+        s->carry_n = (unsigned)n * s->ch;
+      } else if (fi.channels == 1 && s->ch == 2) {   /* the header disagreed: match it */
+        for (int i = n - 1; i >= 0; i--) s->carry[2 * i] = s->carry[2 * i + 1] = s->carry[i];
+        s->carry_n = (unsigned)n * 2;
+      } else {
+        for (int i = 0; i < n; i++) s->carry[i] = (int16_t)((s->carry[2 * i] + s->carry[2 * i + 1]) / 2);
+        s->carry_n = (unsigned)n;
+      }
+      s->carry_off = 0;
+    }
+    return got / s->ch;
+  }
 
   while (got < want) {
     if (s->carry_off < s->carry_n) {       /* drain leftovers first */
@@ -751,6 +841,11 @@ unsigned audio_mp3_stream_read(AudioMp3Stream *s, int16_t *dst, unsigned frames)
     }
     if (s->eos) break;
 
+    /* While the file is still being read in, decode only with a whole
+     * frame's worth present: a cut frame would look like a bad one, and the
+     * resync below would step over real data. */
+    unsigned lim = stream_limit(s);
+    if (lim < s->len && (s->pos >= lim || lim - s->pos < SCE_AUDIODEC_MP3_MAX_ES_SIZE)) break;
     s->ctrl.pEs           = (SceUInt8 *)(s->d + s->pos);
     s->ctrl.inputEsSize   = 0;
     s->ctrl.pPcm          = s->carry;
@@ -798,11 +893,13 @@ void audio_mp3_stream_rewind(AudioMp3Stream *s) {
   s->carry_n = s->carry_off = 0;
   s->eos  = 0;
   s->errs = 0;
+  if (s->sw) mp3dec_init(s->sw);
 }
 
 void audio_mp3_stream_close(AudioMp3Stream *s) {
   if (!s) return;
   if (s->created) sceAudiodecDeleteDecoder(&s->ctrl);
+  free(s->sw);
   free(s->wbuf);
   free(s);
 }

@@ -428,6 +428,11 @@
 // Set to 0 to restore the previous behaviour exactly, where every such asset
 // became a correctly-timed silent placeholder and the score was never audible.
 #define AUDIO_STREAM_LONG_ASSETS 1
+// Test builds: every other MP3 stream decodes with minimp3 even when a
+// hardware decoder is free, so both decoders get played (audio_patch.c).
+#ifndef AUDIO_SW_STREAM_TEST
+#define AUDIO_SW_STREAM_TEST 0
+#endif
 
 // Diagnostic-only null backend. KOTOR II crashes when Disable Sound=1 leaves its
 // audio object NULL, so this instead keeps valid FMOD handles while skipping all

@@ -27,9 +27,13 @@ typedef struct {
  * IsPlaying() then reports nothing playing.
  *
  * STREAM_MAX must stay strictly below DECODER_POOL so a spare always exists.
- * SDK ceiling is SCE_AUDIODEC_MP3_MAX_NSTREAMS (6). */
-#define AUDIO_MP3_DECODER_POOL 4
-#define AUDIO_MP3_STREAM_MAX   2
+ * SDK ceiling is SCE_AUDIODEC_MP3_MAX_NSTREAMS (6). Every MP3 stream now
+ * streams (audio_patch.c, stream_try): at the Kreia conversation the area
+ * track, a looping bed and three cues were live at once (hardware,
+ * real-vita-music3-20261006). VO is RIFF and takes no decoder, so one spare
+ * is enough for the whole-asset MP3 fallback. */
+#define AUDIO_MP3_DECODER_POOL 6
+#define AUDIO_MP3_STREAM_MAX   5
 
 // One-time hardware decoder library init. Safe to call repeatedly.
 int  audio_mp3_init_library(void);
@@ -63,6 +67,15 @@ typedef struct AudioMp3Stream AudioMp3Stream;
  * pacing, so a stream must not report a different length than a decoded copy of
  * the same asset. Returns NULL if the asset is not decodable. */
 AudioMp3Stream *audio_mp3_stream_open(const void *data, unsigned len, AudioPcm *fmt);
+// As above with only the first `loaded` bytes of `data` present yet; the rest
+// arrive through audio_mp3_stream_set_loaded (final: the data ends there).
+// Until then the decoder waits at the edge instead of ending the stream.
+// use_hw 0, or no hardware decoder starting, decodes an MP3 with minimp3 on
+// the reading thread instead (audio_mp3_stream_uses_hw tells which).
+AudioMp3Stream *audio_mp3_stream_open_partial(const void *data, unsigned len, unsigned loaded, int use_hw,
+                                              AudioPcm *fmt);
+void audio_mp3_stream_set_loaded(AudioMp3Stream *s, unsigned loaded, int final);
+int  audio_mp3_stream_uses_hw(const AudioMp3Stream *s);
 
 /* 1 if streaming this asset would take one of the AUDIO_MP3_DECODER_POOL
  * hardware handles. The ambient beds are IMA ADPCM behind a 470-byte junk-MP3

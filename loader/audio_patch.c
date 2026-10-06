@@ -61,6 +61,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <math.h>
 #include "config.h"
 #include "audio_patch.h"
@@ -125,6 +126,23 @@
  * above this becomes timed silence rather than a multi-second stall plus an
  * allocation the heap cannot take. Short VO/ambient (~1.3 MB) is unaffected. */
 #define STREAM_PCM_MAX   (6u * 1024u * 1024u)
+/* Every MP3 stream (music) is streamed, whatever its length: decoding one
+ * whole on open runs on the game thread. Hardware, 2026-10-06: a battle
+ * stinger (10-26 s cue, 1.8-2.2 MB of PCM) took a 620 ms frame in
+ * PlayStinger -> InitializeSource (real-vita-dxtcpu-20261006), and a 44 KB
+ * cue 306 ms to decode (real-vita-music-20261006). RIFF streams (VO, ambient
+ * beds) cost no decode and keep the whole-asset path and its cache, unless
+ * they are over STREAM_PCM_MAX as before.
+ *
+ * A stream reads only STREAM_FIRST_BYTES of its file on open; System::update
+ * reads the rest, STREAM_LOAD_CHUNK at a time and at most once per
+ * STREAM_LOAD_EVERY_US, while it plays. The OBB reads at ~10 MB/s on
+ * hardware: a whole 3.2 MB track was a 319 ms read on the game thread. The
+ * first bytes cover 5-8 s of music; loading stays far ahead of playback
+ * (16-24 KB/s). */
+#define STREAM_FIRST_BYTES   (128u * 1024u)
+#define STREAM_LOAD_CHUNK    (32u * 1024u)
+#define STREAM_LOAD_EVERY_US 12000u
 
 /* ---- incremental streams --------------------------------------------------
  * Above STREAM_PCM_MAX an asset is streamed rather than silenced. It costs its
@@ -144,8 +162,10 @@ typedef struct {
   void     *src;        /* owned compressed ES from big_malloc; decoder reads it */
   int16_t  *ring_buf;   /* RING_FRAMES * ch int16 units */
   AudioRing ring;
-  int       loop;       /* honour FMOD_LOOP_NORMAL; the game sends LOOP_OFF */
-  int       hw;         /* holds a sceAudiodec handle (MP3) vs software (ADPCM) */
+  int       loop;       /* FMOD_LOOP_NORMAL: loop seamlessly, no END, as FMOD does */
+  int       hw;         /* holds a sceAudiodec handle */
+  int       sw;         /* MP3 on minimp3 (no handle was free) */
+  int       hw_live_at_open;   /* handles in use when it opened, for the log */
   unsigned  unders;     /* mixer wanted a frame this stream could not supply */
   char      name[32];   /* asset basename, for the finish line below */
   /* The ONE channel this stream feeds. One decoder means one read position, so
@@ -159,6 +179,11 @@ typedef struct {
    * where the decoding happens: rewinding the decoder from the game thread
    * would be reaching into state the audio thread is using without the lock. */
   int       restart;
+  /* Still reading its file in (STREAM_FIRST_BYTES): the companion's open file
+   * handle, bytes present / expected, and for the [music] line when done. */
+  void     *fh;
+  unsigned  loaded, total, reads;
+  uint64_t  load_t0;
 } Stream;
 
 /* ---- decoded-PCM cache ----------------------------------------------------
@@ -220,6 +245,9 @@ static unsigned g_sfx_context_id[SFX_CONTEXT_SLOTS];
 static SceUID g_sfx_context_thread[SFX_CONTEXT_SLOTS];
 
 static SceUID   g_mutex   = -1;
+/* Streams still reading their file in. Its own lock: a read takes ~3 ms and
+ * must not hold the mixer's. */
+static SceUID   g_load_mutex = -1;
 static SceUID   g_thread  = -1;
 static int      g_port    = -1;
 static int      g_running = 0;
@@ -406,6 +434,7 @@ static void cache_release(PcmEntry *e) {
  *
  * Mutated only under the mixer lock. */
 static int      g_stream_decoders = 0;
+static int      g_sw_streams = 0;          /* MP3 streams on minimp3 */
 static unsigned g_streams_open = 0;        /* lifetime count, for the log */
 static unsigned g_stream_underruns = 0;    /* mixer wanted a frame we lacked */
 static int      g_streaming_paused = 0;
@@ -473,31 +502,36 @@ static unsigned stream_fill_cb(void *ctx, int16_t *dst, unsigned frames,
 }
 
 /* Takes ownership of `src_owned` on success. `es`/`len` name the MP3 bytes
- * inside it. Caller must hold NO lock: this allocates and touches hardware. */
-static Stream *stream_open(void *src_owned, const void *es, unsigned len,
+ * inside it. Caller must hold NO lock: this allocates and touches hardware.
+ *
+ * An MP3 stream takes one of the AUDIO_MP3_STREAM_MAX hardware decoders while
+ * one is free, else it decodes with minimp3 on the audio thread. The game
+ * keeps stopped and finished streams open (sound objects hold theirs between
+ * plays), so all of them can be taken while few are audible: a 13 s voice
+ * line then fell back to a whole decode on the game thread, 547 ms (hardware,
+ * real-vita-music4-20261006 and real-vita-affinity-20261006). RIFF streams
+ * take no decoder. */
+static Stream *stream_open(void *src_owned, const void *es, unsigned len, unsigned loaded,
                            AudioPcm *fmt, int loop) {
-  /* Only hardware-decoded streams are capped: the cap exists to keep a
-   * sceAudiodec handle free for the short synchronous decodes, and a software
-   * ADPCM stream takes none. */
-  int needs_hw = audio_mp3_stream_needs_hw(es, len);
-  if (needs_hw) {
-    int live;
+  int mp3 = audio_mp3_stream_needs_hw(es, len), use_hw = 0, live = 0;
+  if (mp3) {
     lock();
     live = g_stream_decoders;
     unlock();
-    if (live >= AUDIO_MP3_STREAM_MAX) {
-      log_printf("[snd] stream decoder cap reached (%d of pool %d) -- not streaming this one",
-                 live, AUDIO_MP3_DECODER_POOL);
-      return NULL;
-    }
+    use_hw = live < AUDIO_MP3_STREAM_MAX;
+#if AUDIO_SW_STREAM_TEST
+    if (use_hw && (g_streams_open & 1)) use_hw = 0;   /* test builds: every other MP3 stream */
+#endif
   }
 
   Stream *st = (Stream *)calloc(1, sizeof *st);
   if (!st) return NULL;
 
-  st->dec = audio_mp3_stream_open(es, len, fmt);
+  st->dec = audio_mp3_stream_open_partial(es, len, loaded, use_hw, fmt);
   if (!st->dec) { free(st); return NULL; }
-  st->hw = needs_hw;
+  st->hw = audio_mp3_stream_uses_hw(st->dec);
+  st->sw = mp3 && !st->hw;
+  st->hw_live_at_open = live;
 
   unsigned ch = (fmt && fmt->channels) ? fmt->channels : 1;
   st->src      = src_owned;
@@ -512,6 +546,7 @@ static Stream *stream_open(void *src_owned, const void *es, unsigned len,
 
   lock();
   if (st->hw) g_stream_decoders++;
+  if (st->sw) g_sw_streams++;
   g_streams_open++;
   unlock();
   return st;
@@ -526,12 +561,13 @@ static Stream *stream_open(void *src_owned, const void *es, unsigned len,
 static void stream_close(Stream *st) {
   if (!st) return;
   if (st->dec) {
-    int hw = st->hw;
+    int hw = st->hw, sw = st->sw;
     audio_mp3_stream_close(st->dec);
     st->dec = NULL;
-    if (hw) {
+    if (hw || sw) {
       lock();
-      g_stream_decoders--;                 /* the handle went back to the pool */
+      if (hw) g_stream_decoders--;         /* the handle went back to the pool */
+      if (sw) g_sw_streams--;
       unlock();
     }
   }
@@ -950,7 +986,7 @@ static void mix_grain(void) {
              * the rest of the session was silent. Printing the end of every
              * track makes that gap measurable against the next CreateStream
              * instead of inferred from a mixing average. Once per track. */
-            log_printf("[snd] stream FINISHED \"%.31s\" after %u ms "
+            log_printf("[music] stream FINISHED \"%.31s\" after %u ms "
                        "(chan %d, %u decoded frames) -- END now owed to the game",
                        m->name, (unsigned)(i0 * 1000ull / m->rate),
                        (int)(m->ch - g_chan),
@@ -1146,6 +1182,7 @@ static void audio_start(void) {
   if (g_ready) return;
   g_ready = 1;                            /* set first: never retry a failed open */
   g_mutex = sceKernelCreateMutex("kotor_snd", 0, 0, NULL);
+  g_load_mutex = sceKernelCreateMutex("kotor_snd_load", 0, 0, NULL);
   g_port  = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM, OUT_GRAIN,
                                 OUT_RATE, SCE_AUDIO_OUT_MODE_STEREO);
   if (g_port < 0) {
@@ -1371,10 +1408,13 @@ static int Sys_getNumDrivers(void *self, int *n) { (void)self; if (n) *n = 1; re
 #define FMOD_CHANNELCONTROL_CHANNEL      0
 #define FMOD_CHANNELCONTROL_CALLBACK_END 0
 
+static void stream_load_pump(void);
+
 static int Sys_update(void *self) {
   (void)self;
   static int draining = 0;
   g_updates++;
+  stream_load_pump();                   /* streams still reading their file */
   /* The silent benchmark backend finishes channels inside this scan. */
   if (audio_update_skip && !g_end_dirty && !AUDIO_BENCHMARK_SILENT) return FMOD_OK;   /* nothing owed */
   SceUInt64 u0 = sceKernelGetProcessTimeWide();
@@ -1458,6 +1498,67 @@ static int Sys_setFileSystem(void *self, fs_open_cb o, fs_close_cb c, fs_read_cb
 
 static unsigned g_created = 0, g_played = 0, g_missing = 0, g_overbudget = 0;
 
+/* ---- streams still reading their file in (STREAM_FIRST_BYTES) -------------
+ * Game thread: createSound adds, System::update reads, Sound::release
+ * cancels. Under g_load_mutex, taken before the mixer lock when both are. */
+#define MAX_LOADING 4
+static Stream  *g_loading[MAX_LOADING];
+static int      g_nloading = 0;
+static uint64_t g_load_last_us = 0;
+
+static void load_lock(void)   { if (g_load_mutex >= 0) sceKernelLockMutex(g_load_mutex, 1, NULL); }
+static void load_unlock(void) { if (g_load_mutex >= 0) sceKernelUnlockMutex(g_load_mutex, 1); }
+
+/* Caller holds the load lock: close entry i's file and drop it from the list.
+ * complete: every byte arrived; else the stream ends where its bytes do. */
+static void load_finish(int i, int complete) {
+  Stream *st = g_loading[i];
+  if (g_fs_close && st->fh) g_fs_close(st->fh, NULL);
+  st->fh = NULL;
+  if (!complete) st->total = st->loaded;
+  audio_mp3_stream_set_loaded(st->dec, st->loaded, !complete);
+  log_printf("[music] %s loaded: %u KB in %u reads over %u ms%s, underruns so far %u", st->name,
+             st->loaded / 1024, st->reads, (unsigned)((sceKernelGetProcessTimeWide() - st->load_t0) / 1000),
+             complete ? "" : " (file ended early)", st->unders);
+  g_loading[i] = g_loading[--g_nloading];
+}
+
+/* System::update: one STREAM_LOAD_CHUNK read per STREAM_LOAD_EVERY_US, oldest
+ * stream first. */
+static void stream_load_pump(void) {
+  if (!g_nloading) return;
+  uint64_t now = sceKernelGetProcessTimeWide();
+  if (now - g_load_last_us < STREAM_LOAD_EVERY_US) return;
+  g_load_last_us = now;
+  load_lock();
+  if (g_nloading && g_fs_read) {
+    Stream *st = g_loading[0];
+    unsigned n = st->total - st->loaded, got = 0;
+    if (n > STREAM_LOAD_CHUNK) n = STREAM_LOAD_CHUNK;
+    g_fs_read(st->fh, (uint8_t *)st->src + st->loaded, n, &got, NULL);
+    if (got > n) got = n;                  /* never trust the count (see createSound) */
+    st->loaded += got;
+    st->reads++;
+    if (got) audio_mp3_stream_set_loaded(st->dec, st->loaded, 0);
+    if (!got || st->loaded >= st->total) load_finish(0, st->loaded >= st->total);
+  }
+  load_unlock();
+}
+
+/* Sound::release, before the stream goes to the audio thread to be closed. */
+static void stream_load_cancel(Stream *st) {
+  if (!st || !st->fh) return;             /* fh is only set and cleared on this thread */
+  load_lock();
+  for (int i = 0; i < g_nloading; i++) {
+    if (g_loading[i] != st) continue;
+    if (g_fs_close && st->fh) g_fs_close(st->fh, NULL);
+    st->fh = NULL;
+    g_loading[i] = g_loading[--g_nloading];
+    break;
+  }
+  load_unlock();
+}
+
 /* When InitializeSource fails the game retries the SAME track many times a
  * second. Each retry used to re-read a 1.3 MB OBB member; eventually
  * opening the main OBB returned NULL and miniz -- which does not check -- faulted in
@@ -1497,11 +1598,89 @@ static void dump_head(const char *what, const void *p, unsigned len) {
   log_printf("[snd] head %.48s len=%u: %s |%s|", what, len, hex, asc);
 }
 
+/* [music]: one line per stream open (FMOD_CREATESTREAM, music and VO): the
+ * path taken, the sizes, and the game-thread time, split into the file read
+ * and the rest (probe, decode or stream setup). */
+static void music_note(const char *id, unsigned mode, const char *path, unsigned es, unsigned pcm,
+                       uint64_t t_open, unsigned read_us) {
+  unsigned total = (unsigned)(sceKernelGetProcessTimeWide() - t_open);
+  log_printf("[music] id=%.32s mode=0x%x %s: es %u KB, pcm %u KB | read %u ms, rest %u ms", id, mode, path,
+             es / 1024, pcm / 1024, read_us / 1000, (total - read_us) / 1000);
+}
+
+/* createSound, FMOD_CREATESTREAM read through the file callbacks: stream it
+ * if it is MP3, or too big to hold decoded. `owned` has the first `got` of
+ * `total` bytes, `h` is still open. Returns 0 when not streamed (the caller
+ * keeps both), 1 when streamed whole (the caller closes h), 2 when streamed
+ * and still reading (h belongs to the stream), -1 when the sound could not
+ * be made and `owned` is gone. */
+static int stream_try(const char *name, unsigned mode, void *owned, unsigned total, unsigned got, void *h,
+                      void **out, uint64_t t_open, unsigned t_read) {
+#if AUDIO_STREAM_LONG_ASSETS
+  AudioPcm est;
+  if (!audio_mp3_probe(owned, total, &est)) return 0;
+  unsigned need = est.nsamples * est.channels * 2u;
+  int mp3 = audio_mp3_stream_needs_hw(owned, got);
+  int fits = need <= STREAM_PCM_MAX && g_pcm_bytes + need <= PCM_BUDGET_BYTES;
+  if (!mp3 && fits) return 0;
+  int partial = got < total;
+  load_lock();
+  if (partial && g_nloading >= MAX_LOADING) { load_unlock(); return 0; }
+  /* FMOD_LOOP_NORMAL loops inside, seamlessly and without END, as FMOD
+   * does: area beds such as a 25.8 s 22 kHz cue are created that way. The
+   * game replays LOOP_OFF cues itself (a 10.6 s cue every ~30 s around the
+   * Kreia conversation, real-vita-music3-20261006). */
+  int loop = (mode & FMOD_LOOP_NORMAL) != 0;
+  AudioPcm fmt;
+  Stream *st = stream_open(owned, owned, total, got, &fmt, loop);
+  if (!st) { load_unlock(); return 0; }
+  unsigned bn = 0;
+  while (name[bn] && bn < sizeof st->name - 1) { st->name[bn] = name[bn]; bn++; }
+  st->name[bn] = '\0';
+  lock();
+  Snd *ss = snd_alloc();
+  unlock();
+  if (!ss) {
+    load_unlock();
+    stream_close(st);                      /* takes `owned` with it */
+    return -1;
+  }
+  ss->is3d = (mode & FMOD_3D) ? 1 : 0;
+  ss->ent  = NULL;
+  ss->st   = st;
+  ss->pcm  = fmt;                          /* fmt.pcm is NULL */
+  *out = ss;
+  if (partial) {
+    st->fh = h;
+    st->loaded = got;
+    st->total = total;
+    st->load_t0 = t_open;
+    g_loading[g_nloading++] = st;
+  }
+  load_unlock();
+  log_printf("[snd] createSound STREAMING \"%.64s\" -> %u ms %uHz %uch (es %u KB, %u KB read on open, "
+             "ring %u KB; whole decode would have been %u KB)", name, fmt.ms, fmt.rate, fmt.channels,
+             total / 1024, got / 1024, (unsigned)((RING_FRAMES * fmt.channels * 2u) / 1024u), need / 1024);
+  char how[64];
+  snprintf(how, sizeof how, "streamed (%s, %d hw in use), %s", st->hw ? "hw" : st->sw ? "minimp3" : "riff",
+           st->hw_live_at_open, partial ? "reading on" : "whole");
+  music_note(name, mode, how, total, need, t_open, t_read);
+  g_created++;
+  return partial ? 2 : 1;
+#else
+  (void)name; (void)mode; (void)owned; (void)total; (void)got; (void)h; (void)out; (void)t_open; (void)t_read;
+  return 0;
+#endif
+}
+
 static int Sys_createSound(void *self, const char *name, unsigned mode,
                            void *exinfo, void **out) {
   (void)self;
   if (out) *out = NULL;
   if (!name || !out) return FMOD_ERR_INVALID_PARAM;
+  uint64_t t_open = sceKernelGetProcessTimeWide();
+  unsigned t_read = 0;
+  const char *how = "decoded";
 
 #if AUDIO_BENCHMARK_SILENT
   (void)exinfo;
@@ -1558,17 +1737,38 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
     owned = big_malloc(want);
     if (!owned) { if (g_fs_close) g_fs_close(h, NULL); return FMOD_ERR_MEMORY; }
     if (ex_off && g_fs_seek) g_fs_seek(h, ex_off, NULL);
+    /* A stream reads its first bytes only; when it is streamed, the rest is
+     * read while it plays (STREAM_FIRST_BYTES). */
+    unsigned first = ((mode & FMOD_CREATESTREAM) && want > STREAM_FIRST_BYTES) ? STREAM_FIRST_BYTES : want;
     unsigned got = 0;
-    g_fs_read(h, owned, want, &got, NULL);      /* EOF is fine if got > 0 */
-    if (g_fs_close) g_fs_close(h, NULL);
+    g_fs_read(h, owned, first, &got, NULL);     /* EOF is fine if got > 0 */
+    t_read = (unsigned)(sceKernelGetProcessTimeWide() - t_open);
     /* NEVER trust the callback's byte count: once the companion's OBB handle
      * went bad it reported 966980227 for a 1.3 MB buffer, and we then scanned
      * far past the allocation (log109). */
-    if (got > want) {
+    if (got > first) {
       log_printf("[snd] stream read OVERRUN id=%.32s said %u for a %u buffer -- clamped",
-                 name, got, want);
-      got = want;
+                 name, got, first);
+      got = first;
     }
+    if (got && (mode & FMOD_CREATESTREAM)) {
+      int r = stream_try(name, mode, owned, got < first ? got : want, got, h, out, t_open, t_read);
+      if (r == 1 && g_fs_close) g_fs_close(h, NULL);
+      if (r > 0) return FMOD_OK;                /* `owned` belongs to the stream */
+      if (r < 0) { if (g_fs_close) g_fs_close(h, NULL); return FMOD_ERR_INVALID_PARAM; }
+    }
+    if (got == first && first < want) {         /* not streamed: the rest now, as before */
+      unsigned more = 0;
+      g_fs_read(h, (uint8_t *)owned + got, want - got, &more, NULL);
+      if (more > want - got) {
+        log_printf("[snd] stream read OVERRUN id=%.32s said %u for a %u buffer -- clamped",
+                   name, more, want - got);
+        more = want - got;
+      }
+      got += more;
+      t_read = (unsigned)(sceKernelGetProcessTimeWide() - t_open);
+    }
+    if (g_fs_close) g_fs_close(h, NULL);
     if (!got) {
       if (g_missing < 32)
         log_printf("[snd] stream read EMPTY id=%.32s want=%u fsz=%u", name, want, fsz);
@@ -1609,7 +1809,7 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
   PcmEntry *ent = cache_find_id(sound_id);
   if (ent) { ent->refs++; ent->stamp = ++g_clock; }
   unlock();
-  if (ent) { g_cache_hits++; big_free(owned); goto have_pcm; }
+  if (ent) { g_cache_hits++; big_free(owned); how = "cached"; goto have_pcm; }
 
   /* Content identity remains the fallback for streams and callers outside the
    * FModAudioSystem wrapper. Only read the transient buffer after the ID miss. */
@@ -1622,7 +1822,7 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
     if (sound_id && !ent->sound_id) ent->sound_id = sound_id;
   }
   unlock();
-  if (ent) { g_cache_hits++; big_free(owned); goto have_pcm; }
+  if (ent) { g_cache_hits++; big_free(owned); how = "cached"; goto have_pcm; }
   g_cache_miss++;
 
   /* A whole music track is ~15 MB of PCM. Two of them filled the heap, after
@@ -1636,7 +1836,8 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
     AudioPcm est;
     if (audio_mp3_probe(buf, len, &est)) {
       unsigned need = est.nsamples * est.channels * 2u;
-      if (need > STREAM_PCM_MAX || g_pcm_bytes + need > PCM_BUDGET_BYTES) {
+      int too_big = need > STREAM_PCM_MAX || g_pcm_bytes + need > PCM_BUDGET_BYTES;
+      if (too_big) {
 #if AUDIO_STREAM_LONG_ASSETS
         /* Too big to hold decoded, so stream it: the compressed bytes plus a
          * ring instead of the whole waveform, and no decode stall on start.
@@ -1646,8 +1847,8 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
          * reach this branch. */
         if (owned) {
           AudioPcm fmt;
-          Stream *st = stream_open(owned, buf, len, &fmt,
-                                   (mode & FMOD_LOOP_NORMAL) != 0);
+          Stream *st = stream_open(owned, buf, len, len, &fmt,
+                                   (mode & FMOD_LOOP_NORMAL) != 0);   /* see stream_try */
           if (st) {
             const char *base = what;
             for (const char *q = what; *q; q++)
@@ -1672,11 +1873,14 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
                        what, fmt.ms, fmt.rate, fmt.channels, len / 1024,
                        (unsigned)((RING_FRAMES * fmt.channels * 2u) / 1024u),
                        need / 1024);
+            music_note(name, mode, "streamed", len, need, t_open, t_read);
             g_created++;
             return FMOD_OK;                /* `owned` now belongs to st */
           }
         }
 #endif
+      }
+      if (too_big) {
         /* Could not stream it -- fall back to timed silence, which at least
          * keeps the game's pacing and stops the retry loop. */
         pcm = est;                                  /* est.pcm is already NULL */
@@ -1695,8 +1899,16 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
     /* Header-only rejection prevents a corrupted transient SFX buffer from
      * spending 100+ ms in the hardware decoder's byte-by-byte resync loop. */
     AudioPcm probe;
-    if (!(mode & FMOD_OPENMEMORY) || audio_mp3_probe(buf, len, &probe))
+    if (!(mode & FMOD_OPENMEMORY) || audio_mp3_probe(buf, len, &probe)) {
+      uint64_t d0 = sceKernelGetProcessTimeWide();
       ok = audio_mp3_decode(buf, len, &pcm);
+      unsigned dus = (unsigned)(sceKernelGetProcessTimeWide() - d0), pb = ok ? pcm_bytes_of(&pcm) : 0;
+      if (ok && dus >= 5000)
+        log_printf("[music] whole decode on the game thread: %s, es %u KB -> pcm %u KB in %u ms "
+                   "(%u us per 100 KB of PCM; hw streams in use %d)", (mode & FMOD_OPENMEMORY) ? "sfx" : "stream",
+                   len / 1024, pb / 1024, dus / 1000, pb ? (unsigned)((uint64_t)dus * 102400u / pb) : 0,
+                   g_stream_decoders);
+    }
   }
 
   /* Decode failed outright. For a stream, still prefer timed silence over an
@@ -1745,6 +1957,8 @@ have_pcm:;
 
   /* Streams are rare (~40 per 13 min) and are the one path we still cannot
    * see the outcome of, so never throttle them. SFX stay capped. */
+  if (mode & FMOD_CREATESTREAM)
+    music_note(what, mode, silent ? "silent" : how, len, pcm_bytes_of(&s->pcm), t_open, t_read);
   if (g_created < 24 || (mode & FMOD_CREATESTREAM))
     log_printf("[snd] createSound %s%s\"%.64s\" -> %u ms %uHz %uch (mode=0x%x, %u KB) "
                "[cache %u hit / %u miss]",
@@ -1824,6 +2038,7 @@ static int Sys_getChannel(void *self, int idx, void **out) {
 static int Snd_release(void *self) {
   if (!snd_valid(self)) return FMOD_ERR_INVALID_PARAM;
   Snd *s = (Snd *)self;
+  stream_load_cancel(s->st);      /* its file closes here, on this thread */
   lock();
   g_rel_calls++;
   for (int i = 0; i < g_nchannels; i++)
