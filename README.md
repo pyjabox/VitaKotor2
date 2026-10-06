@@ -14,10 +14,12 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.3.0). Core gameplay and the major
-platform-integration paths work on physical Vita. In the tested gameplay v0.3.0
-averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS in
-light ones, up from about 13 FPS in v0.2.0. Performance tuning and broad
+**Playable work in progress (v0.4.0). Core gameplay and the major
+platform-integration paths work on physical Vita. In the tested gameplay the
+game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
+in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removes most of the
+remaining hitches: music changes, first-time textures and images, and voice
+lines no longer freeze the game for 0.3–0.6 s. Performance tuning and broad
 playthrough validation remain active.**
 
 ### Working and validated
@@ -52,6 +54,7 @@ window in the tested gameplay. Each change below was A/B-tested on hardware; the
 |---|---|---|
 | v0.2.0 | about 13 FPS | — |
 | v0.3.0 | about 19–20 FPS (49–53 ms) | 34–37 FPS (27–30 ms) |
+| v0.4.0 | as v0.3.0; music, texture and voice-line hitches removed | as v0.3.0 |
 
 What is enabled by default:
 
@@ -87,7 +90,7 @@ What is enabled by default:
     own option: the loader sets `Shadows=0` and `Soft Shadows=0` in
     `swkotor2.ini` at every launch.
   - **No GL call timing in release builds.**
-- **On main since v0.3.0 (not yet in a release):**
+- **New in v0.4.0:**
   - **Native DXT textures:** DXT1/3/5 textures go to the GPU compressed
     instead of being decoded to RGBA on the CPU (texture building in stalls
     8.9 → 3.3 s in the same scenes).

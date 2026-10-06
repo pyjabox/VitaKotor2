@@ -714,6 +714,8 @@ rendering defects.
 
 ## 15. Current decision
 
+v0.4.0 is v0.3.0 plus the stall fixes of sections 5.10, 5.11 and 5.13: native DXT uploads, streamed music and voice with minimp3 overflow, GPU mip chains for uncompressed images, loose-file misses answered from folder listings, and cached held sounds found from their head and tail. Average frame rate is as in v0.3.0. The 0.3-0.65 s hitches at music starts and changes, voice lines and first-time textures are gone; first-time content loads still reach 0.12-0.23 s, occasionally more (a script spawning content mid-play took 368 ms).
+
 v0.3.0 is release candidate 1 (summary item 16): the section 2.1 geometry-safe profile of v0.2.0 plus every default listed below. In the tested gameplay it averaged about 25 FPS, and 19–20 FPS in the busiest scenes. v0.2.0 delivered about 13 FPS in the tested second level.
 
 Occlusion culling of Gobs (section 6.6) is on by default. It works through the engine's own cull path, and it fails safe when the queries do not work.
@@ -727,9 +729,9 @@ These are also on by default:
 - the GL worker thread (section 5.7);
 - the FMOD update skip (section 5.8);
 - the 3 ms server AI budget (section 5.9);
-- native DXT texture uploads (section 5.10, after v0.3.0);
-- streamed music and voice, with minimp3 for overflow streams (section 5.11, after v0.3.0);
-- mip chains of power-of-two uncompressed images made on the GPU, and loose-file misses answered from folder listings (section 5.13, after v0.3.0);
+- native DXT texture uploads (section 5.10, v0.4.0);
+- streamed music and voice, with minimp3 for overflow streams (section 5.11, v0.4.0);
+- mip chains of power-of-two uncompressed images made on the GPU, and loose-file misses answered from folder listings (section 5.13, v0.4.0);
 - the bloom skip (section 9.1);
 - creature shadows off (section 9.2).
 
