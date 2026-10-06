@@ -372,6 +372,40 @@ In-session A/B (`loader/fx_ab.c`, busy scenes):
 
 The user played the 3 ms windows, noticed nothing, and chose 3 ms. `loader/ai_budget.c` (`AI_BUDGET_US`, 3000 by default) checks the instruction bytes before rewriting the immediate.
 
+### 5.10 Native DXT texture uploads
+
+A stall profile (user-mode PC sampler, every frame of 80 ms or more logged) put CPU texture work at the top of the stalls. `ASLgl::glCompressedTexImage2D` decodes DXT1/3/5 to RGBA8 on the CPU for every mip level (`DecompressDXT*_8888`). For level 0 it also rebuilds the whole chain with `gluBuild2DMipmaps`, which the engine's own level uploads then overwrite. That was 35% of loading stall time, texture creation another 15%, and texture creation was the largest named cause of gameplay hitches.
+
+`loader/dxt_native.c` (`DXT_NATIVE`, 1 by default) hooks `glCompressedTexImage2D` and its ARB alias. A power-of-two 2D DXT upload goes to vitaGL compressed (UBC1/2/3). The hook first records `GL_RGBA` as the bound texture's format in gles2-bc (`OpenGLESState::setBoundTextureFormat` + `setTextureFormat`), as the decoded upload does, because the uber shader reads it. The chain ends at the last full 4x4 block. Every other upload goes through ASLgl as before.
+
+The hook places the blocks itself instead of through vitaGL's compressed upload. vitaGL 38d2f97 swizzles a compressed level with an asynchronous `sceGxmTransferCopy`, a path added upstream on 2026-05-09. It also grows the texture at each new level with `vgl_realloc`, which frees a moved block at once while that copy can still be writing into it.
+- In Vita3K this corrupted the heap: a host crash during the first area load.
+- On hardware, with the copies fenced (`sceGxmTransferFinish`), some combat effect sprites still came out scrambled. A startup self-test showed the copy's layout itself is right: every level of DXT1/DXT5 chains from 4x4 to 512x512, square or not, matched the CPU swizzle when each copy was waited for. What breaks is the copy running asynchronously.
+
+So each level is allocated without data on the GL thread (a new GL worker op, `glw_call`), and the blocks are swizzled in with vitaGL's exported CPU swizzler (`SwizzleTexData64Bpp`/`128Bpp`), its pre-2026-05-09 path. At a chain's first level after 0, the block is grown once to the chain's last level. No GPU copy is involved.
+
+Hardware result in the same scenes: texture building in stalls fell from 8.9 s to 3.3 s of excess time, and the CPU DXT decode left the profile. `gluBuild2DMipmaps` remains for uncompressed images (GUI art, the minimap) through `GLRender::CreateTexture`. `ux0:data/kotor2/dxt_mode.txt` containing `0` sends every upload back through ASLgl.
+
+### 5.11 Music and voice streams
+
+After the textures, every gameplay hitch of 300 ms or more fell on a music start or change (`PlayStinger`, `PlayBattleMusic`, `PlayMusic` -> `CExoStreamingSoundSourceInternal::InitializeSource`). The profiler caught almost no samples in them, so the time was outside the engine: in the loader's FMOD replacement, `FMOD::System::createSound`.
+- A stream under 6 MB of PCM was decoded whole on the game thread at open. A battle stinger (10-26 s, 1.8-2.2 MB of PCM) took a 620 ms frame; a 44 KB cue took 306 ms.
+- Every stream read its whole file first, at about 10 MB/s from the OBB: 319 ms for a 3.2 MB track.
+
+Now:
+- Every MP3 stream streams, whatever its length. RIFF sounds (plain PCM and the IMA-ADPCM area beds) cost no decode and keep the whole-asset path and its cache.
+- A stream reads its first 128 KB on open (5-8 s of music). `System::update` reads the rest, 32 KB per 12 ms, while it plays, and the decoder waits at the loaded edge. Hardware: 3.2 MB tracks loaded in about 2.2 s with no underruns.
+- `FMOD_LOOP_NORMAL` loops inside the stream, seamlessly and without an END, as FMOD does. The menu theme and area beds are created that way. The game itself replays some `LOOP_OFF` cues at intervals; around the Kreia conversation a 10.6 s cue returns about every 30 s.
+- The hardware decoder allows 6 MP3 instances (`SCE_AUDIODEC_MP3_MAX_NSTREAMS`): 5 for streams, 1 spare. The game keeps stopped and finished streams open (sound objects hold theirs between plays), so all 5 can be taken while few are audible. A 13 s voice line then fell back to a whole decode on the game thread: 547 ms. A stream that finds no free hardware decoder now decodes with minimp3 on the audio thread instead (`loader/minimp3.h`, lieff/minimp3 ea99364, CC0, NEON paths on).
+
+minimp3 on hardware costs 0.78-0.85 ms per 44.1 kHz stereo frame (26 ms of audio, about 3% of a core per stream) and 0.52-0.64 ms per 32 kHz mono voice frame. In a 9-minute test with half of all MP3 streams forced onto it (`AUDIO_SW_STREAM_TEST`), there were no underruns and no whole decode on the game thread. The user heard no distortion.
+
+A whole-asset MP3 decode on the game thread runs at about 0.65 ms per KB of PCM, roughly 50 times slower per frame than the same hardware decoder on the audio thread. The cause is not known. Thread placement (below) did not change it.
+
+### 5.12 Thread placement: no effect
+
+The game thread runs on cores 0-1, the audio thread on any core, both at the default priority, with the GL worker on core 2. An in-session A/B rotated three layouts every 30 s: as is; game on core 0 and audio on core 1; game on core 1 and audio on core 0. Window means swung from 34 to 57 ms with the scene within each layout (layout averages 42.7-46.4 ms), in no consistent order, and slow frames did not change. Audio never underran in any layout. The layout stays as it is.
+
 ## 6. Room and visibility experiments
 
 ### 6.1 Scoped VIS edge: successful proof
@@ -590,6 +624,10 @@ The application requests the public `444/222/222/166` MHz profile. A separate PS
 - Compare whole-run averages containing different rooms, loading, or movies.
 - Use `visualizepass2` to switch bloom off: it gates only dead desktop paths (section 9.1).
 - Hold SELECT as a runtime A/B toggle: it opens the game's main menu and contaminates the windows.
+- Upload compressed textures through vitaGL's own compressed path (38d2f97): its asynchronous GPU copy scrambles textures in game and races its own realloc (section 5.10).
+- Make looping streams play once and raise END: it only puts a gap into seamless loops. The game's own interval replays are expected (section 5.11).
+- Pin the game and audio threads to separate cores without new evidence (section 5.12).
+- Trust Vita3K for texture-upload or GPU-copy correctness: it emulates the copy synchronously, and none of the hardware faults above showed in it.
 
 ## 13. Recommended next work
 
@@ -604,9 +642,7 @@ The application requests the public `444/222/222/166` MHz profile. A separate PS
 9. Isolate post-processing disable while retaining all geometry/lighting gates.
 10. Keep every hardware experiment reversible with exact hashes.
 11. Make occlusion re-tests cheap: query a hidden Gob's bounding box with color and depth writes off instead of re-rendering it. This would recover most of the remaining ~6 ms at the heavy spot and cut pop-in to one frame. It requires restoring exactly the GL state that gles2-bc caches.
-12. Remaining combat stalls, each 100 ms or more in some frames:
-    - `FModAudioSystem::CreateStream`, which reads a whole compressed music track synchronously (92 ms to 2 s);
-    - DXT textures decoded on the CPU (`gluBuild2DMipmaps`, `DecompressDXT*`) when new models appear.
+12. Done (sections 5.10 and 5.11): stream opens no longer read or decode on the game thread, and DXT textures are no longer decoded on the CPU. Remaining hitches of about 150-270 ms: the minimap's first draw (`CSWGuiMainInterface::DrawMap`), dialog text and GUI, and the scripts that start a conversation (`ExecuteCommandBeginConversation`). Uncompressed images still build their mips on the CPU (`gluBuild2DMipmaps` via `GLRender::CreateTexture`).
 13. NWScript: `k_ai_master` costs about 17 ms per run and is interpreter-bound (4.5–7 ms per frame, about 18 ms in combat).
 14. The draw path is the rest of the translation cost: about 39 µs per draw, ~21 µs in gles2-bc's shader and state preparation and ~15 µs in vitaGL's `glDrawElements` (section 4.3). `glBindTexture` and `glBindProgramARB` are not safe to filter simply. Some engine code binds textures in vitaGL directly, and the program depends on the fog and alpha flags.
 15. Done (section 5.7): a GL worker thread at the vitaGL boundary.
@@ -650,6 +686,11 @@ rendering defects.
 | Effect-switch A/B + subtree timers (sections 4.4, 9.2) | `9ddbe45a9c86fb780292fde9dbd05e68b0262ee07d2b3e2a7be52d6789ccb3bd` |
 | Fix A/B: FMOD skip, AI budget (sections 5.8, 5.9) | `3c3e22c83417f3580bc4bdd57e453776aa6d7c2416ea3621124af69f4884498c` |
 | Release candidate 1 as played (item 16; source of v0.3.0) | `aa72f280d8bc7a6341e8bd704f00a4c6072fb4df8c7ba4fd492d9435452e0ad3` |
+| Stall profiler build (sections 5.10, 5.11) | `fd4da8b522755ec2a9387140f4b46603f8de980dece8e4f039209a907cc8a8ab` |
+| Native DXT, CPU swizzle, with self-test (section 5.10) | `82035ed494a28f5443da52aaef6be314e1fbae4b736940fa44bec8e4d09670ac` |
+| Streams with FMOD loop semantics, 5 hardware streams (section 5.11) | `7a2b0bc1b198bb8327f68f939f042ea45ae8d10e2a798097bb8327145e210e28` |
+| Thread placement A/B (section 5.12) | `aa36ee33e3ed16fbcd54b3ffa0c0ae7f2e9d1a4597d5f463169599c1fb03772a` |
+| minimp3 overflow, every other stream forced (section 5.11) | `3d2198050ac0103415900927d2174b9f715d833e512099a5afee4796f40bf7fe` |
 
 ## 15. Current decision
 
@@ -666,6 +707,8 @@ These are also on by default:
 - the GL worker thread (section 5.7);
 - the FMOD update skip (section 5.8);
 - the 3 ms server AI budget (section 5.9);
+- native DXT texture uploads (section 5.10, after v0.3.0);
+- streamed music and voice, with minimp3 for overflow streams (section 5.11, after v0.3.0);
 - the bloom skip (section 9.1);
 - creature shadows off (section 9.2).
 

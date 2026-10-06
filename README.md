@@ -87,6 +87,14 @@ What is enabled by default:
     own option: the loader sets `Shadows=0` and `Soft Shadows=0` in
     `swkotor2.ini` at every launch.
   - **No GL call timing in release builds.**
+- **On main since v0.3.0 (not yet in a release):**
+  - **Native DXT textures:** DXT1/3/5 textures go to the GPU compressed
+    instead of being decoded to RGBA on the CPU (texture building in stalls
+    8.9 → 3.3 s in the same scenes).
+  - **Streamed music and voice:** no stream is decoded or read whole on the
+    game thread any more. Music starts no longer freeze the game (stingers took
+    up to 0.6 s). Streams the hardware decoder cannot take decode with minimp3
+    on the audio thread.
 
 ### Remaining limitations
 
@@ -98,7 +106,7 @@ What is enabled by default:
 | AI updates | The server AI gets 3 ms per frame instead of 10 ms, so each object is updated less often (creatures about every third frame in busy areas). Nothing was noticed in testing, but reactions in very crowded scenes may lag slightly. |
 | Audio | Known issue: some sounds can cut in and out. Under investigation. |
 | Latency | The GL worker lets the game run up to one frame ahead of the display. An object stepping out from cover can appear up to three frames late (occlusion culling). |
-| Hitches | Occasional single frames of 0.3–0.6 s remain when new content streams in: music tracks are read whole, and new textures are decompressed on the CPU. |
+| Hitches | Occasional single frames of about 0.15–0.27 s remain, mostly when the minimap is first drawn and when a conversation starts. |
 | Shader cache | Releases use the validated cache-enabled/no-`LOG_ERRORS` vitaGL recipe, which removes major first-use shader stalls and includes a uniform-overflow clamp. An older cache experiment faulted on a warm launch, so cache recovery remains documented and broader validation is ongoing. |
 | Validation | The tested routes, saves, menus, audio, and movies work, but a complete start-to-finish playthrough has not yet been certified. |
 | Text entry | Printable ASCII is supported. Emulator builds may provide a desktop fallback when the emulated common-dialog keyboard does not appear. |
@@ -210,6 +218,7 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Missing game data | Confirm all five libraries, both exactly named OBB files, and the APK `assets/` directory exist under `ux0:data/kotor2/`. |
 | Looks frozen | Check the end of `log.txt`. The crash handler parks the process after writing a `[CRASH]` block. |
 | Rendering problems you suspect the GL worker of | Create `ux0:data/kotor2/glw_mode.txt` containing `0` and relaunch. vitaGL then runs on the game thread, as in v0.2.0. Delete the file to turn the worker back on. |
+| Texture problems you suspect the native DXT path of | Create `ux0:data/kotor2/dxt_mode.txt` containing `0` and relaunch. DXT textures are then decoded on the CPU, as in v0.3.0. Delete the file to turn the native path back on. |
 
 Releases omit vitaGL's animated splash but enable the custom GLSL disk cache as
 part of the validated high-performance recipe. If a warm launch black-screens,
@@ -302,7 +311,7 @@ You can also run the checks directly:
 
 Compile-time feature and benchmark switches are documented in
 `loader/config.h`. These include `GL_WORKER_MODE`, `INI_NO_SHADOWS`,
-`AI_BUDGET_US` and `AUDIO_UPDATE_SKIP`. Configuring with `-DKOTOR_AUTOTEST=ON`
+`AI_BUDGET_US`, `AUDIO_UPDATE_SKIP` and `DXT_NATIVE`. Configuring with `-DKOTOR_AUTOTEST=ON`
 builds a variant that drives the game with scripted input, for unattended
 Vita3K smoke tests. The supported Android library and archive names are listed in
 the installation section above.
@@ -312,6 +321,7 @@ the installation section above.
 - **[ScoobyDouche](https://github.com/ScoobyDouche)**: creator of [VitaKotor](https://github.com/ScoobyDouche/VitaKotor). This KOTOR II port benefited extensively from that project's foundational loader, platform-integration, graphics, audio, reverse-engineering, and Vita adaptation work. VitaKotor made this companion KOTOR II effort possible.
 - Andy Nguyen (TheFloW): the so-loader technique
 - Rinnegatamante: vitaGL, vitashark, and reference ports
+- lieff: [minimp3](https://github.com/lieff/minimp3) (CC0), the software MP3 decoder for streams beyond the hardware decoder's limit
 - VitaSDK contributors: the Vita toolchain and libraries
 - Aspyr Media, Obsidian Entertainment, BioWare, and Lucasfilm: the original game
 
