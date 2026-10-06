@@ -47,7 +47,7 @@ enum {
   COP_GETPROC, COP_DRAW_ARRAYS_RAW, COP_DRAW_ELEMENTS_RAW,
   COP_ENABLE, COP_BIND_FB, COP_SCISSOR, COP_VIEWPORT, COP_BEGIN_QUERY, COP_END_QUERY, COP_DELETE_PROGRAM,
   COP_CREATE_PROGRAM, COP_GEN_QUERIES, COP_IS_PROGRAM, COP_IS_ENABLED, COP_GET_INTEGERV, COP_GET_QUERY,
-  COP_GET_ERROR,
+  COP_GET_ERROR, COP_CALL,
 };
 
 extern void __real_glVertexAttribPointer(GLuint, GLint, GLenum, GLboolean, GLsizei, const void *);
@@ -869,6 +869,9 @@ static void execute(uint32_t *c, uint32_t *ret) {
   case COP_GET_INTEGERV: __real_glGetIntegerv(a[0], (GLint *)(uintptr_t)a[1]); break;
   case COP_GET_QUERY: __real_glGetQueryObjectuiv(a[0], a[1], (GLuint *)(uintptr_t)a[2]); break;
   case COP_GET_ERROR: *ret = __real_glGetError(); break;
+  case COP_CALL:                       /* fn, nargs, data flag or pointer, args..., data */
+    ((glw_fn_t)(uintptr_t)a[0])(a + 3, sync ? (const void *)(uintptr_t)a[2] : a[2] ? (const void *)(a + 3 + a[1]) : NULL);
+    break;
   case COP_GETPROC: *ret = (uint32_t)(uintptr_t)__real_vglGetProcAddress((const char *)(uintptr_t)a[0]); break;
   default: log_printf("[glw] FATAL: unknown custom op 0x%x", (unsigned)op); break;
   }
@@ -951,6 +954,18 @@ static int mode_override(void) {
 
 int gl_worker_mode(void) { return glw_ro.mode; }
 
+void glw_call(glw_fn_t fn, const uint32_t *args, uint32_t nargs, const void *data, uint32_t bytes) {
+  if (glw_direct()) { fn(args, data); return; }
+  int in_place = bytes > GLW_INLINE_MAX;
+  uint32_t *a = glw_begin(COP_CALL | (in_place ? GLW_SYNC : 0), 3 + nargs, in_place ? 0 : bytes);
+  a[0] = (uint32_t)(uintptr_t)fn;
+  a[1] = nargs;
+  a[2] = in_place ? (uint32_t)(uintptr_t)data : bytes ? 1u : 0u;
+  if (nargs) memcpy(a + 3, args, nargs * 4);
+  if (!in_place && bytes) memcpy(a + 3 + nargs, data, bytes);
+  if (in_place) (void)glw_sync(a); else glw_end(a);
+}
+
 void gl_worker_init(void) {
   int ov = mode_override();
   glw_ro.mode = ov >= 0 ? ov : GL_WORKER_MODE;
@@ -1009,6 +1024,7 @@ static void glw_report(void) {
       "drawElements", "pixelStore", "useProgram", "swap", "getProc", "drawArraysRaw", "drawElementsRaw",
       "enable", "bindFb", "scissor", "viewport", "beginQuery", "endQuery", "deleteProgram", "createProgram",
       "genQueries", "isProgram(sync)", "isEnabled(sync)", "getIntegerv(sync)", "getQuery(sync)", "getError",
+      "call",
     };
     const char *nm = bi < GLW_OP_CUSTOM_BASE ? glw_op_names[bi]
                      : bi - GLW_OP_CUSTOM_BASE < sizeof cop / sizeof cop[0] ? cop[bi - GLW_OP_CUSTOM_BASE] : "custom";

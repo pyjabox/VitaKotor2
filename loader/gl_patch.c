@@ -31,6 +31,7 @@
 #include "main.h"
 #include "obb_cache.h"
 #include "gl_state_filter.h"
+#include "dxt_native.h"
 #include "gl_patch.h"
 #include "glsl_prep.h"
 #include "dynlib.h"
@@ -875,6 +876,11 @@ static void slow_note_frame(uint64_t swap_end_us) {
     if (d >= 200000) g_slow_200++;
     if (d >= 500000) g_slow_500++;
     if (d >= 1000000) g_slow_1000++;
+#if STALL_LOG_MS
+    if (d >= STALL_LOG_MS * 1000u)
+      log_printf("[stall] frame %u ms, end %llu ms", (unsigned)(d / 1000u),
+                 (unsigned long long)(swap_end_us / 1000u));
+#endif
   }
   g_slow_prev_swap_us = swap_end_us;
 }
@@ -927,6 +933,7 @@ void gl_patch_on_swap(uint64_t swap_begin_us, uint64_t swap_end_us) {
                  (unsigned long long)frames,
                  (unsigned long long)elapsed);
       slow_report(frames);
+      dxt_native_report();
       g_draw_frame_draws = 0;
       g_draw_frame_frames = 0;
       g_draw_frame_start_us = swap_end_us;

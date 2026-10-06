@@ -664,16 +664,26 @@
 #ifndef AUDIO_UPDATE_SKIP
 #define AUDIO_UPDATE_SKIP         1
 #endif
-// Server AI master budget per frame in microseconds (loader/ai_budget.c); the
-// engine's is 10000. 0 leaves the engine alone.
 // No shadows: the loader sets the game's own [Graphics Options] Shadows=0 and
 // Soft Shadows=0 in swkotor2.ini at every launch (loader/ini_defaults.c). The
 // game then switches them off itself. 0 leaves the ini to the game.
 #ifndef INI_NO_SHADOWS
 #define INI_NO_SHADOWS            1
 #endif
+// Server AI master budget per frame in microseconds (loader/ai_budget.c); the
+// engine's is 10000. 0 leaves the engine alone.
 #ifndef AI_BUDGET_US
 #define AI_BUDGET_US              3000
+#endif
+// The game's DXT textures are uploaded compressed instead of decoded to RGBA on
+// the CPU by ASLgl (loader/dxt_native.c).
+#ifndef DXT_NATIVE
+#define DXT_NATIVE                1
+#endif
+// Diagnostic: a [stall] log line for every frame of STALL_LOG_MS or more
+// (0: none).
+#ifndef STALL_LOG_MS
+#define STALL_LOG_MS              0
 #endif
 // vitaGL on a dedicated thread (loader/gl_worker.c): 0 off, 1 inline (record
 // and replay on the game thread -- validates the command stream), 2 worker

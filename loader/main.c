@@ -33,6 +33,7 @@
 #include "bloom_ctl.h"
 #include "gl_state_filter.h"
 #include "ai_budget.h"
+#include "dxt_native.h"
 #include "ini_defaults.h"
 #include "crash.h"
 #include "heap.h"
@@ -4796,6 +4797,7 @@ int main(int argc, char *argv[]) {
   bloom_ctl_set_off(BLOOM_DISABLE);
   gl_state_filter_install();
   ai_budget_install();
+  dxt_native_install();
 #if GL_WORKER_PROFILE
   glw_prof_install();
 #endif
