@@ -71,6 +71,7 @@
 #include "bigalloc.h"
 #include "sdl_patch.h"
 #include "log.h"
+#include "stall_parts.h"
 
 /* ---- output format -------------------------------------------------------
  * Sources are mono at 32000 or 22050 Hz (measured across the OBB). We mix to one
@@ -140,6 +141,7 @@
  * hardware: a whole 3.2 MB track was a 319 ms read on the game thread. The
  * first bytes cover 5-8 s of music; loading stays far ahead of playback
  * (16-24 KB/s). */
+#define STREAM_HEAD_BYTES    (4u * 1024u)
 #define STREAM_FIRST_BYTES   (128u * 1024u)
 #define STREAM_LOAD_CHUNK    (32u * 1024u)
 #define STREAM_LOAD_EVERY_US 12000u
@@ -331,6 +333,15 @@ static uint32_t key_hash(const void *p, unsigned len) {
     unsigned start = len - (len - 256 < 256 ? len - 256 : 256);
     for (unsigned i = start; i < len; i++) { h ^= b[i]; h *= 16777619u; }
   }
+  return h ^ len;
+}
+
+/* key_hash of a buffer of `len` (>= 512) bytes from its first and last 256. */
+static uint32_t key_hash_head_tail(const void *head, const void *tail, unsigned len) {
+  const unsigned char *b = (const unsigned char *)head, *t = (const unsigned char *)tail;
+  uint32_t h = 2166136261u;
+  for (unsigned i = 0; i < 256; i++) { h ^= b[i]; h *= 16777619u; }
+  for (unsigned i = 0; i < 256; i++) { h ^= t[i]; h *= 16777619u; }
   return h ^ len;
 }
 
@@ -1709,6 +1720,7 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
   unsigned ex_off = ex ? ex[2] : 0;
 
   const void *buf = NULL;
+  PcmEntry   *tail_hit = NULL;            /* found in the cache from head + tail */
   unsigned    len = 0;
   void       *owned = NULL;               /* freed before we return */
 
@@ -1737,9 +1749,12 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
     owned = big_malloc(want);
     if (!owned) { if (g_fs_close) g_fs_close(h, NULL); return FMOD_ERR_MEMORY; }
     if (ex_off && g_fs_seek) g_fs_seek(h, ex_off, NULL);
-    /* A stream reads its first bytes only; when it is streamed, the rest is
-     * read while it plays (STREAM_FIRST_BYTES). */
-    unsigned first = ((mode & FMOD_CREATESTREAM) && want > STREAM_FIRST_BYTES) ? STREAM_FIRST_BYTES : want;
+    /* A stream reads a STREAM_HEAD_BYTES head first. One that streams then
+     * reads up to STREAM_FIRST_BYTES and the rest while it plays; one held
+     * decoded is looked up in the cache from its head and tail before the
+     * rest is read (cached voice and ambience were re-read whole, 9-19 ms). */
+    int stream = (mode & FMOD_CREATESTREAM) != 0;
+    unsigned first = (stream && want > STREAM_HEAD_BYTES) ? STREAM_HEAD_BYTES : want;
     unsigned got = 0;
     g_fs_read(h, owned, first, &got, NULL);     /* EOF is fine if got > 0 */
     t_read = (unsigned)(sceKernelGetProcessTimeWide() - t_open);
@@ -1751,7 +1766,42 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
                  name, got, first);
       got = first;
     }
-    if (got && (mode & FMOD_CREATESTREAM)) {
+    if (stream && got == first && first < want) {
+      AudioPcm est;
+      int streams = audio_mp3_stream_needs_hw(owned, got) || !audio_mp3_probe(owned, want, &est) ||
+                    est.nsamples * est.channels * 2u > STREAM_PCM_MAX;
+      if (streams) {                            /* the stream's first bytes */
+        unsigned upto = want < STREAM_FIRST_BYTES ? want : STREAM_FIRST_BYTES, more = 0;
+        if (upto > got) g_fs_read(h, (uint8_t *)owned + got, upto - got, &more, NULL);
+        if (more > upto - got) more = upto - got;
+        got += more;
+        first = upto;
+        t_read = (unsigned)(sceKernelGetProcessTimeWide() - t_open);
+      } else if (want >= 512 && g_fs_seek) {
+        /* key_hash reads only the first and last 256 bytes and the length. */
+        unsigned char tail[256];
+        unsigned tg = 0;
+        g_fs_seek(h, ex_off + want - 256, NULL);
+        g_fs_read(h, tail, 256, &tg, NULL);
+        if (tg == 256) {
+          uint32_t hk = key_hash_head_tail(owned, tail, want);
+          lock();
+          tail_hit = cache_find(want, hk);
+          if (tail_hit) { tail_hit->refs++; tail_hit->stamp = ++g_clock; }
+          unlock();
+        }
+        if (tail_hit) {
+          if (g_fs_close) g_fs_close(h, NULL);
+          g_cache_hits++;
+          t_read = (unsigned)(sceKernelGetProcessTimeWide() - t_open);
+          buf = owned;
+          len = want;
+          goto read_done;
+        }
+        g_fs_seek(h, ex_off + got, NULL);       /* back, for the rest */
+      }
+    }
+    if (got && stream) {
       int r = stream_try(name, mode, owned, got < first ? got : want, got, h, out, t_open, t_read);
       if (r == 1 && g_fs_close) g_fs_close(h, NULL);
       if (r > 0) return FMOD_OK;                /* `owned` belongs to the stream */
@@ -1778,6 +1828,7 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
     }
     buf = owned;
     len = got;
+  read_done:;
   } else {
     /* No callbacks installed: `name` really is a path. */
     if (bad_seen(name)) return FMOD_ERR_FILE_NOTFOUND;   /* no I/O on a retry */
@@ -1806,10 +1857,13 @@ static int Sys_createSound(void *self, const char *name, unsigned mode,
   unsigned *context = (mode & FMOD_OPENMEMORY) ? sfx_context_slot() : NULL;
   unsigned sound_id = context ? *context : 0;
   lock();
-  PcmEntry *ent = cache_find_id(sound_id);
-  if (ent) { ent->refs++; ent->stamp = ++g_clock; }
+  PcmEntry *ent = tail_hit;
+  if (!ent) {
+    ent = cache_find_id(sound_id);
+    if (ent) { ent->refs++; ent->stamp = ++g_clock; g_cache_hits++; }
+  }
   unlock();
-  if (ent) { g_cache_hits++; big_free(owned); how = "cached"; goto have_pcm; }
+  if (ent) { big_free(owned); how = "cached"; goto have_pcm; }
 
   /* Content identity remains the fallback for streams and callers outside the
    * FModAudioSystem wrapper. Only read the transient buffer after the ID miss. */
@@ -1968,6 +2022,19 @@ have_pcm:;
   g_created++;
   return FMOD_OK;
 }
+
+#if STALL_LOG_MS
+/* STALL_LOG_MS: game-thread time in createSound, for the [stall] line. */
+static int Sys_createSound_timed(void *self, const char *name, unsigned mode, void *exinfo, void **out) {
+  uint64_t t0 = sceKernelGetProcessTimeWide();
+  int r = Sys_createSound(self, name, mode, exinfo, out);
+  stall_part(SP_SND, (uint32_t)(sceKernelGetProcessTimeWide() - t0), 0);
+  return r;
+}
+#define SYS_CREATE_SOUND Sys_createSound_timed
+#else
+#define SYS_CREATE_SOUND Sys_createSound
+#endif
 
 /* g_played counts SUCCESSES, which cannot distinguish "the game stopped asking"
  * from "the game asked and we turned it down" -- and log154 and log159 both show
@@ -2482,7 +2549,7 @@ static const so_default_dynlib audio_dynlib[] = {
   { "_ZN4FMOD6System9playSoundEPNS_5SoundEPNS_12ChannelGroupEbPPNS_7ChannelE", (uintptr_t)&Sys_playSound },
   { "_ZN4FMOD6System9setOutputE15FMOD_OUTPUTTYPE", (uintptr_t)&fmod_stub },
   { "_ZN4FMOD6System10getChannelEiPPNS_7ChannelE", (uintptr_t)&Sys_getChannel },
-  { "_ZN4FMOD6System11createSoundEPKcjP22FMOD_CREATESOUNDEXINFOPPNS_5SoundE", (uintptr_t)&Sys_createSound },
+  { "_ZN4FMOD6System11createSoundEPKcjP22FMOD_CREATESOUNDEXINFOPPNS_5SoundE", (uintptr_t)&SYS_CREATE_SOUND },
   { "_ZN4FMOD6System13getNumDriversEPi", (uintptr_t)&Sys_getNumDrivers },
   { "_ZN4FMOD6System13setFileSystemEPF11FMOD_RESULTPKcPjPPvS5_EPFS1_S5_S5_EPFS1_S5_S5_jS4_S5_EPFS1_S5_jS5_EPFS1_P18FMOD_ASYNCREADINFOS5_ESI_i", (uintptr_t)&Sys_setFileSystem },
   { "_ZN4FMOD6System19setStreamBufferSizeEjj", (uintptr_t)&fmod_stub },

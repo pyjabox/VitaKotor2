@@ -32,6 +32,8 @@
 #include "obb_cache.h"
 #include "gl_state_filter.h"
 #include "dxt_native.h"
+#include "mip_gpu.h"
+#include "stall_parts.h"
 #include "gl_patch.h"
 #include "glsl_prep.h"
 #include "dynlib.h"
@@ -876,11 +878,7 @@ static void slow_note_frame(uint64_t swap_end_us) {
     if (d >= 200000) g_slow_200++;
     if (d >= 500000) g_slow_500++;
     if (d >= 1000000) g_slow_1000++;
-#if STALL_LOG_MS
-    if (d >= STALL_LOG_MS * 1000u)
-      log_printf("[stall] frame %u ms, end %llu ms", (unsigned)(d / 1000u),
-                 (unsigned long long)(swap_end_us / 1000u));
-#endif
+    stall_parts_frame(d, swap_end_us);    /* [stall] line, with STALL_LOG_MS */
   }
   g_slow_prev_swap_us = swap_end_us;
 }
@@ -934,6 +932,7 @@ void gl_patch_on_swap(uint64_t swap_begin_us, uint64_t swap_end_us) {
                  (unsigned long long)elapsed);
       slow_report(frames);
       dxt_native_report();
+      mip_gpu_report();
       g_draw_frame_draws = 0;
       g_draw_frame_frames = 0;
       g_draw_frame_start_us = swap_end_us;
@@ -1710,14 +1709,25 @@ static void tex16_pack(uint16_t *dst, const unsigned char *src, int w, int h, in
 
 /* The one 2D upload path: convert when we can, charge what was really spent,
  * hand it to vitaGL. Always uploads exactly once. */
+static void tex_upload2d_body(GLenum tg, GLint l, GLint ifmt, GLsizei w, GLsizei h,
+                              GLint b, GLenum f, GLenum ty, const void *px);
+/* STALL_LOG_MS: game-thread time in uploads, for the [stall] line. */
 static void tex_upload2d(GLenum tg, GLint l, GLint ifmt, GLsizei w, GLsizei h,
                          GLint b, GLenum f, GLenum ty, const void *px) {
+  uint64_t t0 = sceKernelGetProcessTimeWide();
+  tex_upload2d_body(tg, l, ifmt, w, h, b, f, ty, px);
+  stall_part(SP_TEXUP, (uint32_t)(sceKernelGetProcessTimeWide() - t0), 0);
+}
+static void tex_upload2d_body(GLenum tg, GLint l, GLint ifmt, GLsizei w, GLsizei h,
+                              GLint b, GLenum f, GLenum ty, const void *px) {
 #if GL_TEX16_CONVERT
   int kind = (f == GL_RGBA) ? TEX16_4444 : (f == GL_RGB) ? TEX16_565 : TEX16_NONE;
   if (px && kind != TEX16_NONE && ty == GL_UNSIGNED_BYTE && w > 0 && h > 0) {
     uint16_t *cv = (uint16_t *)malloc((size_t)w * h * 2);
     if (cv) {
+      uint64_t c0 = sceKernelGetProcessTimeWide();
       tex16_pack(cv, (const unsigned char *)px, w, h, kind);
+      stall_part(SP_TEX16, (uint32_t)(sceKernelGetProcessTimeWide() - c0), 0);
       GLenum ty16 = (kind == TEX16_4444) ? GL_UNSIGNED_SHORT_4_4_4_4
                                          : GL_UNSIGNED_SHORT_5_6_5;
       if (g_cur_tex && g_cur_tex < TEXKIND_MAX && l == 0) {

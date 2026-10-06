@@ -38,6 +38,7 @@
 #include "dynlib.h"
 #include "fs_patch.h"
 #include "log.h"
+#include "stall_parts.h"
 #include "autotest.h"
 #include "ramfile.h"
 #include "obb_cache.h"
@@ -700,6 +701,36 @@ static FILE *fopen_diag(const char *path, const char *mode) {
     }
   }
 
+  /* FS_MISS_CACHE: a read-only open of a loose file that is not there. The
+   * engine opens texturepacks/... and the like by relative path, which newlib
+   * resolves against its working directory: so does this check. */
+  if (open_path) {
+    char abs[512];
+    const char *ap = open_path;
+    if (!strchr(open_path, ':') && open_path[0] != '/') {
+      char cwd[256];
+      if (getcwd(cwd, sizeof cwd)) {
+        size_t cl = strlen(cwd);
+        snprintf(abs, sizeof abs, "%s%s%s", cwd, (cl && cwd[cl - 1] == '/') ? "" : "/", open_path);
+        ap = abs;
+      } else {
+        ap = NULL;
+      }
+    }
+    if (ap && !strncmp(ap, "ux0:/", 5)) {            /* "ux0:/data" names "ux0:data" */
+      char norm[512];
+      snprintf(norm, sizeof norm, "ux0:%s", ap + 5);
+      snprintf(abs, sizeof abs, "%s", norm);
+      ap = abs;
+    }
+    if (ap && !strncmp(ap, "ux0:", 4)) {
+      if (mode && mode[0] == 'r' && !strchr(mode, '+')) {
+        if (fs_known_missing(ap)) { errno = ENOENT; return NULL; }
+      } else {
+        fs_miss_forget(ap);
+      }
+    }
+  }
   FILE *f = fopen(open_path, mode);
   if (f) {
     if (++g_files_open > g_files_peak) g_files_peak = g_files_open;
@@ -1069,6 +1100,44 @@ static int FT_Load_Glyph_t(void *face, unsigned gi, int flags) {
   return r;
 }
 
+#if STALL_LOG_MS
+/* STALL_LOG_MS: the game thread's file time, for the [stall] line. */
+static inline uint32_t us_since(uint64_t t0) { return (uint32_t)(sceKernelGetProcessTimeWide() - t0); }
+static FILE *fopen_timed(const char *path, const char *mode) {
+  uint64_t t0 = sceKernelGetProcessTimeWide();
+  FILE *f = fopen_diag(path, mode);
+  stall_part(SP_OPEN, us_since(t0), 0);
+  return f;
+}
+static size_t fread_timed(void *p, size_t sz, size_t n, FILE *f) {
+  uint64_t t0 = sceKernelGetProcessTimeWide();
+  size_t r = fread_diag(p, sz, n, f);
+  stall_part(SP_READ, us_since(t0), (uint32_t)(r * sz));
+  return r;
+}
+static int fseek_timed(FILE *f, long off, int whence) {
+  uint64_t t0 = sceKernelGetProcessTimeWide();
+  int r = fseek_diag(f, off, whence);
+  stall_part(SP_SEEK, us_since(t0), 0);
+  return r;
+}
+static int fseeko_timed(FILE *f, off_t off, int whence) {
+  uint64_t t0 = sceKernelGetProcessTimeWide();
+  int r = fseeko_diag(f, off, whence);
+  stall_part(SP_SEEK, us_since(t0), 0);
+  return r;
+}
+static int fclose_timed(FILE *f) {
+  uint64_t t0 = sceKernelGetProcessTimeWide();
+  int r = fclose_diag(f);
+  stall_part(SP_CLOSE, us_since(t0), 0);
+  return r;
+}
+#define FILE_FN(name) name##_timed
+#else
+#define FILE_FN(name) name##_diag
+#endif
+
 so_default_dynlib default_dynlib[] = {
   // ============ (a) stack protector ============
   { "__stack_chk_guard", (uintptr_t)&__stack_chk_guard_fake },
@@ -1129,8 +1198,8 @@ so_default_dynlib default_dynlib[] = {
   // ============ (a) libc: stdio.h ============
   { "printf", (uintptr_t)&printf }, { "snprintf", (uintptr_t)&snprintf }, { "sprintf", (uintptr_t)&sprintf },
   { "vsnprintf", (uintptr_t)&vsnprintf }, { "sscanf", (uintptr_t)&sscanf }, { "fprintf", (uintptr_t)&fprintf_safe },
-  { "fopen", (uintptr_t)&fopen_diag }, { "fclose", (uintptr_t)&fclose_diag }, { "fread", (uintptr_t)&fread_diag }, { "fwrite", (uintptr_t)&fwrite_diag },
-  { "fseek", (uintptr_t)&fseek_diag }, { "ftell", (uintptr_t)&ftell_diag }, { "fflush", (uintptr_t)&fflush_diag },
+  { "fopen", (uintptr_t)&FILE_FN(fopen) }, { "fclose", (uintptr_t)&FILE_FN(fclose) }, { "fread", (uintptr_t)&FILE_FN(fread) }, { "fwrite", (uintptr_t)&fwrite_diag },
+  { "fseek", (uintptr_t)&FILE_FN(fseek) }, { "ftell", (uintptr_t)&ftell_diag }, { "fflush", (uintptr_t)&fflush_diag },
   { "fputs", (uintptr_t)&fputs_diag }, { "fputc", (uintptr_t)&fputc_diag }, { "fgets", (uintptr_t)&fgets_diag }, { "fgetc", (uintptr_t)&fgetc_diag },
   { "getc", (uintptr_t)&getc }, { "ungetc", (uintptr_t)&ungetc },
   { "puts", (uintptr_t)&puts }, { "putchar", (uintptr_t)&putchar }, { "rewind", (uintptr_t)&rewind_diag },
@@ -1220,7 +1289,7 @@ so_default_dynlib default_dynlib[] = {
   // this table would override the cross-module link; see so_resolve).
 
   // ============ (b) libminiz/libLzmaLib's own libc imports ============
-  { "fseeko", (uintptr_t)&fseeko_diag }, { "ftello", (uintptr_t)&ftello_diag },
+  { "fseeko", (uintptr_t)&FILE_FN(fseeko) }, { "ftello", (uintptr_t)&ftello_diag },
   { "abort", (uintptr_t)&abort }, { "utime", (uintptr_t)&utime },
   { "__gnu_Unwind_Find_exidx", (uintptr_t)&ret0 },
   { "__sF", (uintptr_t)&__sF },

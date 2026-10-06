@@ -29,6 +29,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "stall_parts.h"
 #include "gl_worker.h"
 #include "gl_worker_internal.h"
 
@@ -228,7 +229,9 @@ uint32_t glw_sync(uint32_t *a) {
     sceKernelWaitSema(R.sync_sema, 1, NULL);
   }
   __sync_synchronize();
-  st_sync_us += (uint32_t)(sceKernelGetProcessTimeWide() - t0);
+  uint32_t sync_us = (uint32_t)(sceKernelGetProcessTimeWide() - t0);
+  st_sync_us += sync_us;
+  stall_part(SP_GLSYNC, sync_us, 0);
   return W.sync_ret;
 }
 

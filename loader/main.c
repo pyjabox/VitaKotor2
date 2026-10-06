@@ -34,6 +34,7 @@
 #include "gl_state_filter.h"
 #include "ai_budget.h"
 #include "dxt_native.h"
+#include "mip_gpu.h"
 #include "ini_defaults.h"
 #include "crash.h"
 #include "heap.h"
@@ -4798,6 +4799,7 @@ int main(int argc, char *argv[]) {
   gl_state_filter_install();
   ai_budget_install();
   dxt_native_install();
+  mip_gpu_install();
 #if GL_WORKER_PROFILE
   glw_prof_install();
 #endif

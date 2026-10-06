@@ -685,8 +685,23 @@
 #ifndef DXT_NATIVE
 #define DXT_NATIVE                1
 #endif
-// Diagnostic: a [stall] log line for every frame of STALL_LOG_MS or more
-// (0: none).
+// Mip chains of power-of-two uncompressed images made by vitaGL instead of the
+// engine's gluBuild2DMipmaps (loader/mip_gpu.c). MIPGEN_AB (test builds): every
+// other image takes the engine's path, both timed.
+#ifndef MIPGEN_GPU
+#define MIPGEN_GPU                1
+#endif
+#ifndef MIPGEN_AB
+#define MIPGEN_AB                 0
+#endif
+// Loose-file misses in read-only folders (texturepacks/, override/, ...)
+// answered from a listing made once per folder, instead of a stat or open on
+// the memory card each time (loader/fs_patch.c).
+#ifndef FS_MISS_CACHE
+#define FS_MISS_CACHE             1
+#endif
+// Diagnostic: a [stall] log line for every frame of STALL_LOG_MS or more, with
+// the game thread's time outside the engine (loader/stall_parts.c). 0: none.
 #ifndef STALL_LOG_MS
 #define STALL_LOG_MS              0
 #endif

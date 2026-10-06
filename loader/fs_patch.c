@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -49,6 +50,9 @@ static const char *fs_translate_ex(const char *in, char *out, int outsz, int do_
 
 const char *fs_translate(const char *in, char *out, int outsz) {
   return fs_translate_ex(in, out, outsz, 1);
+}
+const char *fs_translate_quiet(const char *in, char *out, int outsz) {
+  return fs_translate_ex(in, out, outsz, 0);
 }
 
 // `do_log` exists for stat(): CExoBaseInternal::GetDirectoryList stats every
@@ -95,10 +99,128 @@ static const char *fs_translate_ex(const char *in, char *out, int outsz, int do_
   return out;
 }
 
+// ---- known-missing loose files (FS_MISS_CACHE) -----------------------------
+// The engine looks for a loose copy of nearly every resource before the
+// archives: texturepacks/swpc_tex_gui.erf on every texture load (449 times in
+// log97), then override/, streamsounds/, dlc/, localized/ ... A Vita3K run of
+// 67 s made 1828 such probes, every one a stat or an open that misses on the
+// memory card. In the read-only folders below, a folder is listed once, on its
+// first probe, and a name it does not hold is answered without the card. A
+// write, rename, removal or mkdir through these hooks into a listed folder
+// drops its list, so it is read again.
+#if FS_MISS_CACHE
+#define MISS_DIRS 48
+typedef struct { char dir[192]; int present, n; uint32_t *names; } MissDir;
+static MissDir g_miss[MISS_DIRS];
+static int g_nmiss;
+static SceUID g_miss_mutex = -1;
+static unsigned g_miss_answered;
+
+static uint32_t name_hash(const char *s) {          // case-insensitive, as FAT/exFAT
+  uint32_t h = 2166136261u;
+  for (; *s; s++) { unsigned char c = (unsigned char)*s; if (c >= 'A' && c <= 'Z') c += 32; h ^= c; h *= 16777619u; }
+  return h;
+}
+static int miss_dir_allowed(const char *dir) {
+  static const char *const tops[] = { "texturepacks", "override", "streamsounds", "streamvoice",
+                                      "streammusic", "lips", "localized", "dlc", "movies" };
+  const char *root = DATA_PATH "/";
+  size_t rl = strlen(root);
+  if (strncasecmp(dir, root, rl)) return 0;
+  const char *rest = dir + rl;
+  for (unsigned i = 0; i < sizeof tops / sizeof tops[0]; i++) {
+    size_t tl = strlen(tops[i]);
+    if (!strncasecmp(rest, tops[i], tl) && (rest[tl] == 0 || rest[tl] == '/')) return 1;
+  }
+  return 0;
+}
+static void miss_lock(void) {
+  if (g_miss_mutex < 0) g_miss_mutex = sceKernelCreateMutex("fs_miss", 0, 0, NULL);
+  if (g_miss_mutex >= 0) sceKernelLockMutex(g_miss_mutex, 1, NULL);
+}
+static void miss_unlock(void) { if (g_miss_mutex >= 0) sceKernelUnlockMutex(g_miss_mutex, 1); }
+
+/* Caller holds the lock. */
+static MissDir *miss_dir_get(const char *dir) {
+  for (int i = 0; i < g_nmiss; i++)
+    if (!strcasecmp(g_miss[i].dir, dir)) return &g_miss[i];
+  if (g_nmiss >= MISS_DIRS || strlen(dir) >= sizeof g_miss[0].dir) return NULL;
+  MissDir *m = &g_miss[g_nmiss];
+  memset(m, 0, sizeof *m);
+  snprintf(m->dir, sizeof m->dir, "%s", dir);
+  SceUID d = sceIoDopen(dir);
+  if (d >= 0) {
+    int cap = 0;
+    SceIoDirent e;
+    m->present = 1;
+    while (sceIoDread(d, &e) > 0) {
+      if (m->n == cap) {
+        cap = cap ? cap * 2 : 64;
+        uint32_t *nn = (uint32_t *)realloc(m->names, (size_t)cap * sizeof *nn);
+        if (!nn) { sceIoDclose(d); free(m->names); return NULL; }
+        m->names = nn;
+      }
+      m->names[m->n++] = name_hash(e.d_name);
+    }
+    sceIoDclose(d);
+  }
+  g_nmiss++;
+  log_printf("[FS] miss cache: %s %s, %d entries", dir, m->present ? "listed" : "absent", m->n);
+  return m;
+}
+
+/* A translated path: 1 when it is certainly not on the card. */
+int fs_known_missing(const char *t) {
+  const char *slash = t ? strrchr(t, '/') : NULL;
+  if (!slash || !slash[1]) return 0;
+  char dir[192];
+  size_t dl = (size_t)(slash - t);
+  if (dl >= sizeof dir) return 0;
+  memcpy(dir, t, dl);
+  dir[dl] = 0;
+  if (!miss_dir_allowed(dir)) return 0;
+  uint32_t h = name_hash(slash + 1);
+  int missing = 0;
+  miss_lock();
+  MissDir *m = miss_dir_get(dir);
+  if (m) {
+    missing = 1;
+    for (int i = 0; m->present && i < m->n; i++)
+      if (m->names[i] == h) { missing = 0; break; }
+  }
+  if (missing) g_miss_answered++;
+  miss_unlock();
+  return missing;
+}
+
+/* A translated path was written, created or removed: forget its folder and
+ * the folder above (a new subfolder appears in its parent's list). */
+void fs_miss_forget(const char *t) {
+  char dir[192];
+  snprintf(dir, sizeof dir, "%s", t ? t : "");
+  miss_lock();
+  for (int up = 0; up < 2; up++) {
+    char *slash = strrchr(dir, '/');
+    if (!slash) break;
+    *slash = 0;
+    for (int i = 0; i < g_nmiss; i++)
+      if (!strcasecmp(g_miss[i].dir, dir)) { free(g_miss[i].names); g_miss[i] = g_miss[--g_nmiss]; break; }
+  }
+  miss_unlock();
+}
+
+unsigned fs_miss_answered(void) { return g_miss_answered; }
+#else
+int fs_known_missing(const char *t) { (void)t; return 0; }
+void fs_miss_forget(const char *t) { (void)t; }
+unsigned fs_miss_answered(void) { return 0; }
+#endif
+
 // ---- posix file/dir ops (translate + log + forward to newlib/sceIo) --------
 static int fs_access(const char *path, int mode) {
   char t[512];
   fs_translate(path, t, sizeof(t));
+  if (fs_known_missing(t)) return -1;
   int r = access(t, mode);
   if (r != 0) log_printf("[FS] access MISS: %s", t);
   return r;
@@ -163,9 +285,12 @@ _Static_assert(__builtin_offsetof(struct bionic_stat, st_mtime_sec) == 80,
 #define BIONIC_S_IFDIR 0040000
 #define BIONIC_S_IFREG 0100000
 
+/* Must stay the function the engine calls: it tells the save list's caller
+ * by its return address (no wrapper in between). */
 static int fs_stat(const char *path, void *out) {
   char t[512];
   fs_translate_ex(path, t, sizeof(t), 0);
+  if (fs_known_missing(t)) return -1;
 
   uintptr_t caller = (uintptr_t)__builtin_return_address(0) & ~(uintptr_t)1;
   uintptr_t caller_off = kotor_mod.text_base ? caller - kotor_mod.text_base : 0;
@@ -261,6 +386,7 @@ static int fs_unlink(const char *path) {
   char t[512];
   fs_translate(path, t, sizeof(t));
   int r = unlink(t);
+  fs_miss_forget(t);
   log_printf("[FS] unlink %s -> %d", t, r);
   return r;
 }
@@ -273,6 +399,7 @@ static int fs_remove(const char *path) {
   char t[512];
   fs_translate(path, t, sizeof(t));
   int r = remove(t);
+  fs_miss_forget(t);
   log_printf("[FS] remove %s -> %d", t, r);
   return r;
 }
@@ -280,6 +407,7 @@ static int fs_mkdir(const char *path, mode_t mode) {
   char t[512];
   fs_translate(path, t, sizeof(t));
   int r = mkdir(t, mode);
+  fs_miss_forget(t);
   log_printf("[FS] mkdir %s -> %d", t, r);
   return r;
 }
@@ -287,6 +415,7 @@ static int fs_rmdir(const char *path) {
   char t[512];
   fs_translate(path, t, sizeof(t));
   int r = rmdir(t);
+  fs_miss_forget(t);
   log_printf("[FS] rmdir %s -> %d", t, r);
   return r;
 }
@@ -327,6 +456,8 @@ static int fs_rename(const char *a, const char *b) {
   fs_translate(a, ta, sizeof(ta));
   fs_translate(b, tb, sizeof(tb));
   int r = rename(ta, tb);
+  fs_miss_forget(ta);
+  fs_miss_forget(tb);
 
   // Android/Windows semantics used by KOTOR replace the previous
   // gameinprogress directory. Vita/newlib refuses to rename a directory over an

@@ -452,7 +452,9 @@ static SDL_RWops *SDL_RWFromFile_hook(const char *fname, const char *mode) {
 
   char t[512];
   fs_translate(fname, t, sizeof(t));
-  SDL_RWops *rw = SDL_RWFromFile(t, mode);
+  int ro = mode && mode[0] == 'r' && !strchr(mode, '+');
+  SDL_RWops *rw = (ro && fs_known_missing(t)) ? NULL : SDL_RWFromFile(t, mode);
+  if (!ro) fs_miss_forget(t);
   if (!rw && mode && mode[0] == 'r') {
     // The in-game Load button requests the desktop/base layout by bare name,
     // while the same constructor assumes controls that only exist in Aspyr's
