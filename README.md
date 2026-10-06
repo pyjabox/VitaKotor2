@@ -95,6 +95,12 @@ What is enabled by default:
     game thread any more. Music starts no longer freeze the game (stingers took
     up to 0.6 s). Streams the hardware decoder cannot take decode with minimp3
     on the audio thread.
+  - **Faster first-time images:** mip chains of uncompressed images (menu art,
+    minimap, portraits, loading screens) are made on the GPU instead of the
+    CPU (in loading, 332 → 76 ms per image on average).
+  - **No card access for missing loose files:** the engine looks for loose
+    copies of nearly every resource first; misses in the read-only folders are
+    now answered from memory.
 
 ### Remaining limitations
 
@@ -106,7 +112,7 @@ What is enabled by default:
 | AI updates | The server AI gets 3 ms per frame instead of 10 ms, so each object is updated less often (creatures about every third frame in busy areas). Nothing was noticed in testing, but reactions in very crowded scenes may lag slightly. |
 | Audio | Known issue: some sounds can cut in and out. Under investigation. |
 | Latency | The GL worker lets the game run up to one frame ahead of the display. An object stepping out from cover can appear up to three frames late (occlusion culling). |
-| Hitches | Occasional single frames of about 0.15–0.27 s remain, mostly when the minimap is first drawn and when a conversation starts. |
+| Hitches | Occasional single frames of about 0.12–0.23 s remain when new content is first read from the memory card (about 10 MB/s): the minimap's first draw, dialog entries and their voices, creatures spawned by scripts. Loading screens still build some large images on the CPU. |
 | Shader cache | Releases use the validated cache-enabled/no-`LOG_ERRORS` vitaGL recipe, which removes major first-use shader stalls and includes a uniform-overflow clamp. An older cache experiment faulted on a warm launch, so cache recovery remains documented and broader validation is ongoing. |
 | Validation | The tested routes, saves, menus, audio, and movies work, but a complete start-to-finish playthrough has not yet been certified. |
 | Text entry | Printable ASCII is supported. Emulator builds may provide a desktop fallback when the emulated common-dialog keyboard does not appear. |
@@ -219,6 +225,7 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Looks frozen | Check the end of `log.txt`. The crash handler parks the process after writing a `[CRASH]` block. |
 | Rendering problems you suspect the GL worker of | Create `ux0:data/kotor2/glw_mode.txt` containing `0` and relaunch. vitaGL then runs on the game thread, as in v0.2.0. Delete the file to turn the worker back on. |
 | Texture problems you suspect the native DXT path of | Create `ux0:data/kotor2/dxt_mode.txt` containing `0` and relaunch. DXT textures are then decoded on the CPU, as in v0.3.0. Delete the file to turn the native path back on. |
+| Image problems you suspect the GPU mipmaps of | Create `ux0:data/kotor2/mipgen_mode.txt` containing `0` and relaunch. The engine then builds every mip chain on the CPU, as in v0.3.0. Delete the file to turn it back on. |
 
 Releases omit vitaGL's animated splash but enable the custom GLSL disk cache as
 part of the validated high-performance recipe. If a warm launch black-screens,
@@ -311,7 +318,8 @@ You can also run the checks directly:
 
 Compile-time feature and benchmark switches are documented in
 `loader/config.h`. These include `GL_WORKER_MODE`, `INI_NO_SHADOWS`,
-`AI_BUDGET_US`, `AUDIO_UPDATE_SKIP` and `DXT_NATIVE`. Configuring with `-DKOTOR_AUTOTEST=ON`
+`AI_BUDGET_US`, `AUDIO_UPDATE_SKIP`, `DXT_NATIVE`, `MIPGEN_GPU`, `FS_MISS_CACHE`
+and `STALL_LOG_MS` (a per-frame stall breakdown in `log.txt`). Configuring with `-DKOTOR_AUTOTEST=ON`
 builds a variant that drives the game with scripted input, for unattended
 Vita3K smoke tests. The supported Android library and archive names are listed in
 the installation section above.

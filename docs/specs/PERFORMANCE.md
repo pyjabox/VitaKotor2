@@ -406,6 +406,19 @@ A whole-asset MP3 decode on the game thread runs at about 0.65 ms per KB of PCM,
 
 The game thread runs on cores 0-1, the audio thread on any core, both at the default priority, with the GL worker on core 2. An in-session A/B rotated three layouts every 30 s: as is; game on core 0 and audio on core 1; game on core 1 and audio on core 0. Window means swung from 34 to 57 ms with the scene within each layout (layout averages 42.7-46.4 ms), in no consistent order, and slow frames did not change. Audio never underran in any layout. The layout stays as it is.
 
+### 5.13 First-use GUI and conversation stalls
+
+With textures and streams fixed, the remaining gameplay hitches (about 150-270 ms) were the minimap's first draw, dialog text and the start of a conversation. The PC profiler caught little of them (23-39 samples in 255-428 ms frames): the time was in the loader's file layer, libObbVfs, miniz and the card. `loader/stall_parts.c` (with `STALL_LOG_MS`) appends to each slow frame's `[stall]` line the game thread's time in file opens, reads (with KB) and seeks, GL worker waits, texture uploads and the 16-bit conversion, mip builds and `createSound`.
+
+Three fixes followed:
+- **Mip chains on the GPU** (`loader/mip_gpu.c`, `MIPGEN_GPU`). The engine builds the mip chain of every uncompressed image with its own `gluBuild2DMipmaps`, shrinking each level on the CPU. vitaGL ignores the pixels of a level above 0 of an uncompressed texture and downsamples level 0 on the GPU instead (`_glTexImage2D_FlatIMPL` -> `gpu_alloc_mipmaps`). For a power-of-two image the hook uploads level 0 through ASLgl and calls `glGenerateMipmap`. Hardware A/B, alternate images: during loading the engine path averaged 332 ms per image (2.85 s worst), the vitaGL path 76 ms (430 ms worst); in gameplay 36 ms against 2.8 ms.
+- **Loose-file misses** (`FS_MISS_CACHE`). The engine looks for a loose copy of nearly every resource before the archives, opening `texturepacks/swpc_tex_*.{nwm,mod,sav,erf}` by relative path on every texture load, then `override/`, `streamsounds/`, `dlc/` and others: 1828 card misses in a 67 s Vita3K run. In those read-only folders a listing made once per folder answers the misses (`stat`, `access`, `SDL_RWFromFile`, `fopen` with relative paths resolved through `getcwd`); a write into a listed folder drops its listing. Vita3K: 197 misses left per run, all in folders the game writes. Hardware: the conversation start's 36-40 file opens went from 23-24 ms to 8 ms.
+- **Cached held sounds**. A RIFF stream held decoded (voice, ambience) was read whole from the card before the decoded-PCM cache was checked, 9-19 ms for a sound already cached. The cache key only reads the first and last 256 bytes and the length, so a 4 KB head and a 256-byte tail now find it.
+
+`fs_stat` tells the save list's caller by its return address (libkotor2+0x59d780, which needs the bionic stat layout). A timing wrapper around it emptied the Load Game list in testing: hooks that read `__builtin_return_address` must not be wrapped.
+
+What remains is mostly first-time card reads at about 10 MB/s: the minimap's 714 KB image (60 ms), scripts spawning creatures mid-play (one read 3.6 MB in a 368 ms frame), dialog entries and their voice lines. Large non-power-of-two images still take the engine's CPU mip path during loading (up to 2.86 s for one image).
+
 ## 6. Room and visibility experiments
 
 ### 6.1 Scoped VIS edge: successful proof
@@ -628,6 +641,7 @@ The application requests the public `444/222/222/166` MHz profile. A separate PS
 - Make looping streams play once and raise END: it only puts a gap into seamless loops. The game's own interval replays are expected (section 5.11).
 - Pin the game and audio threads to separate cores without new evidence (section 5.12).
 - Trust Vita3K for texture-upload or GPU-copy correctness: it emulates the copy synchronously, and none of the hardware faults above showed in it.
+- Wrap a hook that reads `__builtin_return_address(0)` (`fs_stat`, `ai_list_cache.c`, `bloom_ctl.c`, several in `main.c`): the wrapper becomes the caller (section 5.13).
 
 ## 13. Recommended next work
 
@@ -642,7 +656,11 @@ The application requests the public `444/222/222/166` MHz profile. A separate PS
 9. Isolate post-processing disable while retaining all geometry/lighting gates.
 10. Keep every hardware experiment reversible with exact hashes.
 11. Make occlusion re-tests cheap: query a hidden Gob's bounding box with color and depth writes off instead of re-rendering it. This would recover most of the remaining ~6 ms at the heavy spot and cut pop-in to one frame. It requires restoring exactly the GL state that gles2-bc caches.
-12. Done (sections 5.10 and 5.11): stream opens no longer read or decode on the game thread, and DXT textures are no longer decoded on the CPU. Remaining hitches of about 150-270 ms: the minimap's first draw (`CSWGuiMainInterface::DrawMap`), dialog text and GUI, and the scripts that start a conversation (`ExecuteCommandBeginConversation`). Uncompressed images still build their mips on the CPU (`gluBuild2DMipmaps` via `GLRender::CreateTexture`).
+12. Done (sections 5.10, 5.11 and 5.13): stream opens no longer read or decode on the game thread, DXT textures are no longer decoded on the CPU, power-of-two uncompressed images get their mips on the GPU, and loose-file misses no longer touch the card. Next, by expected gain:
+    - non-power-of-two images during loading: scale level 0 to a power of two in the loader and let vitaGL make the chain (up to 2.86 s per image now);
+    - a NEON 16-bit conversion (`tex16_pack`, about 12 ms for the minimap image);
+    - loading the minimap image when the area loads instead of at its first draw;
+    - a card throughput benchmark, to see whether larger or read-ahead reads beat the ~10 MB/s seen on first reads.
 13. NWScript: `k_ai_master` costs about 17 ms per run and is interpreter-bound (4.5–7 ms per frame, about 18 ms in combat).
 14. The draw path is the rest of the translation cost: about 39 µs per draw, ~21 µs in gles2-bc's shader and state preparation and ~15 µs in vitaGL's `glDrawElements` (section 4.3). `glBindTexture` and `glBindProgramARB` are not safe to filter simply. Some engine code binds textures in vitaGL directly, and the program depends on the fog and alpha flags.
 15. Done (section 5.7): a GL worker thread at the vitaGL boundary.
@@ -691,6 +709,8 @@ rendering defects.
 | Streams with FMOD loop semantics, 5 hardware streams (section 5.11) | `7a2b0bc1b198bb8327f68f939f042ea45ae8d10e2a798097bb8327145e210e28` |
 | Thread placement A/B (section 5.12) | `aa36ee33e3ed16fbcd54b3ffa0c0ae7f2e9d1a4597d5f463169599c1fb03772a` |
 | minimp3 overflow, every other stream forced (section 5.11) | `3d2198050ac0103415900927d2174b9f715d833e512099a5afee4796f40bf7fe` |
+| Stall breakdown + mip A/B (section 5.13) | `76ecb0d4b94ee192bb7f7b5486824c920d00564f624b7724d5939cd37ef52ef8` |
+| Stall breakdown + misses, GPU mips, cached sounds (section 5.13) | `79b6d45d0c511d75b049faac637e3dd29b662060bedd3af9cc9c9f96b8e83dec` |
 
 ## 15. Current decision
 
@@ -709,6 +729,7 @@ These are also on by default:
 - the 3 ms server AI budget (section 5.9);
 - native DXT texture uploads (section 5.10, after v0.3.0);
 - streamed music and voice, with minimp3 for overflow streams (section 5.11, after v0.3.0);
+- mip chains of power-of-two uncompressed images made on the GPU, and loose-file misses answered from folder listings (section 5.13, after v0.3.0);
 - the bloom skip (section 9.1);
 - creature shadows off (section 9.2).
 
