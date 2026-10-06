@@ -905,7 +905,6 @@ static void slow_report(uint64_t frames) {
 }
 
 void gl_patch_on_swap(uint64_t swap_begin_us, uint64_t swap_end_us) {
-  effects_low_rearm();
 #if !PERFORMANCE_TELEMETRY_ENABLE
   (void)swap_begin_us;
 #if DRAW_FRAME_BENCHMARK_ENABLE

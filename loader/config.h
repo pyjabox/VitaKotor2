@@ -547,7 +547,7 @@
 #define EFFECTS_LOW_DISABLE_ENVIRONMENT_MAPPING 0
 #define EFFECTS_LOW_DISABLE_EMLM 0
 #define EFFECTS_LOW_DISABLE_EMITTERS 0
-#define EFFECTS_LOW_DISABLE_SHADOWS 1
+#define EFFECTS_LOW_DISABLE_SHADOWS 0
 #define EFFECTS_LOW_DISABLE_ADVANCED_LIGHTING 0
 #define EFFECTS_LOW_DISABLE_GRASS 0
 #define EFFECTS_LOW_DISABLE_LENS_FLARES 0
@@ -666,6 +666,12 @@
 #endif
 // Server AI master budget per frame in microseconds (loader/ai_budget.c); the
 // engine's is 10000. 0 leaves the engine alone.
+// No shadows: the loader sets the game's own [Graphics Options] Shadows=0 and
+// Soft Shadows=0 in swkotor2.ini at every launch (loader/ini_defaults.c). The
+// game then switches them off itself. 0 leaves the ini to the game.
+#ifndef INI_NO_SHADOWS
+#define INI_NO_SHADOWS            1
+#endif
 #ifndef AI_BUDGET_US
 #define AI_BUDGET_US              3000
 #endif

@@ -123,7 +123,7 @@ static const char *const k_log_noisy[] = {
 static const char *const k_log_keep[] = {
   "fail", "FAIL", "error", "ERROR", "Error", "WARNING", "warning",
   "MISSING", "missing", "abort", "ABORT", "CRASH", "unresolved",
-  "[DRAW_FRAME]", "[cull]", "[ailist]", "[cansee]", "[bloom]", "[ramfile]", "[glsf]", "[effects-low]", "[aibudget]", "[autotest]", "[glw]", "[glw:prof]",
+  "[DRAW_FRAME]", "[cull]", "[ailist]", "[cansee]", "[bloom]", "[ramfile]", "[glsf]", "[effects-low]", "[ini]", "[aibudget]", "[autotest]", "[glw]", "[glw:prof]",
 };
 
 static int log_suppressed(const char *fmt) {

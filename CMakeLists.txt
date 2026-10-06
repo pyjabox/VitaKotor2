@@ -70,6 +70,7 @@ add_executable(KOTOR2
   loader/obb_cache.c
   loader/gl_state_filter.c
   loader/ai_budget.c
+  loader/ini_defaults.c
   loader/autotest.c
   loader/glsl_prep.c
   loader/crash.c

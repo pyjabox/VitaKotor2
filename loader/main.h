@@ -27,7 +27,4 @@ typedef struct {
 void engine_perf_snapshot(engine_perf_t *out, uint64_t now_us);
 void engine_perf_presented(void);
 
-/* main.c: re-zero the effect switches the game turned back on (each swap). */
-void effects_low_rearm(void);
-
 #endif

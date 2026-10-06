@@ -83,7 +83,9 @@ What is enabled by default:
     frame, is skipped when no sound has ended (about 1 ms per frame).
   - **Mobile bloom skipped** (GPU 36 → 22 ms per frame, no visible difference
     noticed).
-  - **Creature shadows off** (about 4.4 ms and 80 draws per frame).
+  - **No shadows** (about 4.4 ms and 80 draws per frame), through the game's
+    own option: the loader sets `Shadows=0` and `Soft Shadows=0` in
+    `swkotor2.ini` at every launch.
   - **No GL call timing in release builds.**
 
 ### Remaining limitations
@@ -92,7 +94,7 @@ What is enabled by default:
 |---|---|
 | Startup | A cold launch can remain black for roughly two minutes while archives are scanned and shaders compile. Wait before assuming the process has hung. |
 | Performance | Heavy scenes remain CPU-bound, mostly in the engine's per-object rendering work: about 19–20 FPS in the busiest tested scenes. A 10 m distance filter can reduce draws further but remains too experimental for releases. See the [performance reference](docs/specs/PERFORMANCE.md). |
-| Visual changes | Dynamic creature shadows are off by default, and the mobile bloom passes are skipped. Rooms keep their baked lighting. |
+| Visual changes | There are no dynamic shadows: the loader sets the game's own `Shadows=0` (and `Soft Shadows=0`) in `swkotor2.ini` at every launch. The in-game option still works until the next launch. The mobile bloom passes are skipped (no game option controls them). Rooms keep their baked lighting. |
 | AI updates | The server AI gets 3 ms per frame instead of 10 ms, so each object is updated less often (creatures about every third frame in busy areas). Nothing was noticed in testing, but reactions in very crowded scenes may lag slightly. |
 | Audio | Known issue: some sounds can cut in and out. Under investigation. |
 | Latency | The GL worker lets the game run up to one frame ahead of the display. An object stepping out from cover can appear up to three frames late (occlusion culling). |
@@ -299,7 +301,7 @@ You can also run the checks directly:
 ```
 
 Compile-time feature and benchmark switches are documented in
-`loader/config.h`. These include `GL_WORKER_MODE`, `EFFECTS_LOW_DISABLE_SHADOWS`,
+`loader/config.h`. These include `GL_WORKER_MODE`, `INI_NO_SHADOWS`,
 `AI_BUDGET_US` and `AUDIO_UPDATE_SKIP`. Configuring with `-DKOTOR_AUTOTEST=ON`
 builds a variant that drives the game with scripted input, for unattended
 Vita3K smoke tests. The supported Android library and archive names are listed in

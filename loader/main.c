@@ -33,6 +33,7 @@
 #include "bloom_ctl.h"
 #include "gl_state_filter.h"
 #include "ai_budget.h"
+#include "ini_defaults.h"
 #include "crash.h"
 #include "heap.h"
 #include "bigalloc.h"
@@ -3288,24 +3289,6 @@ static void visibility_engine_init(void) {
  * safer than substituting render functions: the engine remains responsible
  * for selecting a valid path and maintaining matching GL/resource lifetime.
  * All currently selected switches are 32-bit integer globals in .data. */
-/* The game re-applies its graphics options after start-up (AurEnableShadows
- * and friends write these same globals), so a switch zeroed once comes back
- * on (Vita3K and hardware, 2026-10-04: enableshadows, twice at start-up).
- * effects_low_rearm(), called at every swap, zeroes any that did. */
-#define EFFECTS_LOW_MAX 24
-static volatile int *g_effects_low_addr[EFFECTS_LOW_MAX];
-static const char *g_effects_low_name[EFFECTS_LOW_MAX];
-static unsigned g_effects_low_n, g_effects_low_rearms;
-
-void effects_low_rearm(void) {
-  for (unsigned i = 0; i < g_effects_low_n; i++) {
-    if (*g_effects_low_addr[i] == 0) continue;
-    *g_effects_low_addr[i] = 0;
-    if (g_effects_low_rearms++ < 8)
-      log_printf("[effects-low] %s was turned back on: 0 again", g_effects_low_name[i]);
-  }
-}
-
 static void effects_low_init(void) {
   struct EffectSwitch { const char *symbol; int disable; } switches[] = {
     {"enablerenderenv", EFFECTS_LOW_DISABLE_ENVIRONMENT_MAPPING},
@@ -3347,10 +3330,6 @@ static void effects_low_init(void) {
     kuKernelCpuUnrestrictedMemcpy((void *)address, &zero, sizeof zero);
     log_printf("[effects-low] %s: %d -> 0 at %p", switches[i].symbol,
                before, (void *)address);
-    if (g_effects_low_n < EFFECTS_LOW_MAX) {
-      g_effects_low_addr[g_effects_low_n] = (volatile int *)address;
-      g_effects_low_name[g_effects_low_n++] = switches[i].symbol;
-    }
   }
 #if EFFECTS_LOW_DISABLE_POSTPROCESSING
   /* Preserve framebuffer/pbuffer allocation. This one-byte engine flag skips
@@ -4804,6 +4783,7 @@ int main(int argc, char *argv[]) {
   install_render_callee_attribution();
 #endif
   visibility_engine_init();
+  ini_defaults_apply();   // before the game reads its options
   effects_low_init();
   // After every installer above that may own Gob::Render/VisibilityCheck
   // (telemetry, portal Gob filter): culling takes both slots or neither.

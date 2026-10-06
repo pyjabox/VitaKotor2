@@ -23,7 +23,7 @@ The largest confirmed improvements are:
 10. **Archive read cache (section 5.5):** scripts were re-read from the memory card on every run, blocking about 10 ms per frame. Keeping repeated reads in RAM took the mean frame from 75.0 to 60.2 ms in a matched A/B. The release build now averages about 53 ms per frame (about 19 FPS) in the tested gameplay.
 11. **GL state filter (section 5.6):** repeated `glEnable`/`glDisable` and texture-unit calls are dropped before Aspyr's translation layer, and a dead query in `glTexParameteri` is removed. In matched A/B windows the frame was about 5 ms faster (1–12 ms).
 12. **GL worker thread (section 5.7):** vitaGL runs on core 2. The game thread records commands instead, at about 4.5 ms per frame instead of about 8 ms. Frame at the busy spot: 61.7–63.7 → 58.5 ms.
-13. **Creature shadows off (section 9.2):** about 4.4 ms and 80 draws per frame in a busy scene.
+13. **No shadows (section 9.2):** about 4.4 ms and 80 draws per frame in a busy scene. The loader sets the game's own `Shadows=0` in `swkotor2.ini`.
 14. **FMOD update skip (section 5.8):** the game calls `System::update` about 50 times per frame; the loader now scans its channels only when a sound has ended. About 1 ms per frame.
 15. **Server AI budget 3 ms (section 5.9):** the AI master spent its full 10 ms budget every frame. At 3 ms it takes 3.4–5.3 ms.
 16. **Release candidate 1, released as v0.3.0 (2026-10-04)**, all of the above on top of item 11:
@@ -539,7 +539,19 @@ One hardware session cycled base / shadows off / emitters off / env-map off ever
 - emitters off: 0.6–1.2 ms;
 - env-map off: no measurable change.
 
-Shadows are now off by default (`EFFECTS_LOW_DISABLE_SHADOWS` 1, the user's call). The game turns `enableshadows` back on while it applies its graphics options, twice at start-up. `effects_low_rearm()` therefore re-zeroes the switches at every swap.
+Shadows are off by default (the user's call), through the game's own option. At start-up `CClientOptions::LoadOptions` reads `[Graphics Options] Shadows` from `swkotor2.ini` and calls `SetShadows`, which branches through two veneers to `AurEnableShadows` or `AurDisableShadows`. `loader/ini_defaults.c` (`INI_NO_SHADOWS`, 1 by default) writes `Shadows=0` and `Soft Shadows=0` into the ini at every launch, before the game reads it. The rest of the file is left as it is.
+
+In Vita3K, with `Shadows=0` and no loader override, `Scene::RenderShadows` never ran (neither the projected nor the stencil pass). The earlier override zeroed `enableshadows` in engine memory and re-zeroed it at every swap, because the game applied the ini's `Shadows=1` on top of it; it was removed.
+
+Other shadow knobs:
+- `LightManager::m_nMaxShadowLights` is already 1.
+- `maxshadowdist` (35 m) is read by `Scene::DoGobShadows` per frame.
+- Shadow blobs are part of creature appearance data (`CSWCCreature::ApplyShadowBlob`); no ini option controls them.
+
+No game option controls the mobile bloom:
+- `IosBloomEnabled()` returns 1.
+- `Frame Buffer=0` (`SetFrameBuffer` → `AurDisableFrameBufferEffects`) left draws per frame identical on the same route, so the bloom chain still runs.
+- The bloom skip (section 9.1) stays.
 
 ## 10. Logging and telemetry policy
 
