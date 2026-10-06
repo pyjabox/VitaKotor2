@@ -619,7 +619,7 @@ void io_obb_mount_done(void) {
   for (int i = 0; i < SF_MAX; i++)
     if (g_sf[i].fd && g_sf[i].idx) obbidx_finish(g_sf[i].idx);
   io_unlock();
-  log_printf("[io] mount complete: %u card reads, %u served from cache, %d handles live",
+  log_printf("[obbidx] mount complete: %u card reads, %u served from the replay index, %d handles live",
              g_vreads, g_vhits, g_vlive);
 }
 

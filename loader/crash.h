@@ -9,4 +9,9 @@
 // Wire this BEFORE handing off to the game so any fault self-reports.
 void crash_init(void);
 
+// The handler itself, for a handler registered later that passes on faults it
+// does not own (pc_prof.c).
+struct KuKernelExceptionContext;
+void crash_report(struct KuKernelExceptionContext *c);
+
 #endif

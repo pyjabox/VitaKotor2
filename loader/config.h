@@ -694,6 +694,15 @@
 #ifndef MIPGEN_AB
 #define MIPGEN_AB                 0
 #endif
+// Diagnostic: statistical PC profiler for the engine (loader/pc_prof.c).
+#ifndef PC_PROF
+#define PC_PROF                   0
+#endif
+#define PC_PROF_PERIOD_US         3000
+// Test builds: a memory-card read benchmark at the first frame (gl_patch.c).
+#ifndef CARD_BENCH
+#define CARD_BENCH                0
+#endif
 // Loose-file misses in read-only folders (texturepacks/, override/, ...)
 // answered from a listing made once per folder, instead of a stat or open on
 // the memory card each time (loader/fs_patch.c).

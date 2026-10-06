@@ -139,6 +139,8 @@ static void crash_handler(KuKernelExceptionContext *c) {
     sceKernelDelayThread(1000 * 1000);
 }
 
+void crash_report(KuKernelExceptionContext *c) { crash_handler(c); }
+
 void crash_init(void) {
   KuKernelExceptionHandlerOpt opt;
   opt.size = sizeof(opt);

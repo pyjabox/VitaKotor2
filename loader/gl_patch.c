@@ -34,6 +34,7 @@
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "stall_parts.h"
+#include "pixel_ops.h"
 #include "gl_patch.h"
 #include "glsl_prep.h"
 #include "dynlib.h"
@@ -908,7 +909,63 @@ static void slow_report(uint64_t frames) {
   }
 }
 
+/* The first presented frame: the engine has mounted its archives and read
+ * their key tables (CClientExoAppInternal::StartServices). Stop recording the
+ * replay index and write it, so later boots serve those scattered reads from
+ * one file (obb_index.c). KOTOR I's loader mounts the archives itself and
+ * called this after; here nothing did, the index was never written, and every
+ * boot made ~60,000 small card reads (hardware, real-vita-iofix-20261006). */
+#if CARD_BENCH
+static void card_bench(void);
+#endif
+static void first_frame(uint64_t swap_end_us) {
+  io_perf_t a;
+  io_perf_snapshot(&a);
+  log_printf("[obbidx] first frame at %u.%u s: %u archive reads from the card (%u KB in %u ms), %u from the "
+             "replay index", (unsigned)(swap_end_us / 1000000u), (unsigned)(swap_end_us / 100000u % 10u), a.reads,
+             (unsigned)(a.card_bytes / 1024u), (unsigned)(a.card_us / 1000u), a.hits);
+  io_obb_mount_done();
+#if CARD_BENCH
+  card_bench();
+#endif
+}
+
+#if CARD_BENCH
+/* Test builds: memory-card read speed by access pattern, once, at the first
+ * frame -- does reading in larger blocks beat the ~7-9 MB/s of loading reads?
+ * Each pattern reads its own region of the main archive (a fresh fd, no
+ * cache in between). */
+static void card_bench(void) {
+  SceUID fd = sceIoOpen(DATA_PATH "/main.213.com.aspyr.swkotorii.obb", SCE_O_RDONLY, 0);
+  if (fd < 0) return;
+  SceOff size = sceIoLseek(fd, 0, SCE_SEEK_END);
+  uint8_t *buf = (uint8_t *)malloc(512 * 1024);
+  if (!buf || size < 256LL * 1024 * 1024) { free(buf); sceIoClose(fd); return; }
+  static const struct { unsigned chunk, total, random; } k[] = {
+    {16 * 1024, 2u << 20, 0}, {64 * 1024, 4u << 20, 0}, {512 * 1024, 8u << 20, 0}, {64 * 1024, 4u << 20, 1}};
+  SceOff base = 96LL * 1024 * 1024;
+  for (unsigned i = 0; i < sizeof k / sizeof k[0]; i++) {
+    uint64_t t0 = sceKernelGetProcessTimeWide();
+    unsigned seed = 0x9e3779b9u, done = 0;
+    for (unsigned off = 0; off < k[i].total; off += k[i].chunk) {
+      SceOff at = base + off;
+      if (k[i].random) { seed = seed * 1664525u + 1013904223u; at = base + (SceOff)(seed % 2048u) * 65536; }
+      if (sceIoPread(fd, buf, k[i].chunk, at) > 0) done += k[i].chunk;
+    }
+    unsigned us = (unsigned)(sceKernelGetProcessTimeWide() - t0);
+    log_printf("[obbidx] card bench: %s %u KB reads, %u KB in %u ms = %u.%u MB/s", k[i].random ? "random" : "sequential",
+               k[i].chunk / 1024, done / 1024, us / 1000, us ? (unsigned)((uint64_t)done * 1000000 / us >> 20) : 0,
+               us ? (unsigned)((uint64_t)done * 10000000 / us >> 20) % 10 : 0);
+    base += 192LL * 1024 * 1024;                       /* next region */
+  }
+  free(buf);
+  sceIoClose(fd);
+}
+#endif
+
 void gl_patch_on_swap(uint64_t swap_begin_us, uint64_t swap_end_us) {
+  static int s_first_done;
+  if (!s_first_done) { s_first_done = 1; first_frame(swap_end_us); }
 #if !PERFORMANCE_TELEMETRY_ENABLE
   (void)swap_begin_us;
 #if DRAW_FRAME_BENCHMARK_ENABLE
@@ -1680,32 +1737,8 @@ static GLsizei gl_rt_align_w(GLsizei w) { return (w > 0 && (w & 7)) ? ((w + 7) &
  * through to vitaGL: a byte-typed sub-upload into a 4444 texture would be read
  * as though it were already 4444, and corrupt it. */
 
-static const uint8_t k_bayer4[16] = { 0, 8, 2,10, 12, 4,14, 6,  3,11, 1, 9, 15, 7,13, 5 };
-
-/* Writes w*h uint16 into dst. src is tightly packed 8-bit RGB(A). */
-static void tex16_pack(uint16_t *dst, const unsigned char *src, int w, int h, int kind) {
-  for (int y = 0; y < h; y++) {
-    const unsigned char *sp = src + (size_t)y * w * (kind == TEX16_4444 ? 4 : 3);
-    uint16_t *d = dst + (size_t)y * w;
-    for (int x = 0; x < w; x++) {
-      unsigned dth = k_bayer4[((y & 3) << 2) | (x & 3)];
-      if (kind == TEX16_4444) {
-        unsigned r4 = (sp[0] + dth) >> 4; if (r4 > 15) r4 = 15;
-        unsigned g4 = (sp[1] + dth) >> 4; if (g4 > 15) g4 = 15;
-        unsigned b4 = (sp[2] + dth) >> 4; if (b4 > 15) b4 = 15;
-        unsigned a4 = (sp[3] + dth) >> 4; if (a4 > 15) a4 = 15;
-        d[x] = (uint16_t)((r4 << 12) | (g4 << 8) | (b4 << 4) | a4);
-        sp += 4;
-      } else {
-        unsigned r5 = (sp[0] + (dth >> 1)) >> 3; if (r5 > 31) r5 = 31;
-        unsigned g6 = (sp[1] + (dth >> 2)) >> 2; if (g6 > 63) g6 = 63;
-        unsigned b5 = (sp[2] + (dth >> 1)) >> 3; if (b5 > 31) b5 = 31;
-        d[x] = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
-        sp += 3;
-      }
-    }
-  }
-}
+/* The conversion loop itself is tex16_pack (pixel_ops.c, NEON). */
+uint32_t g_tex16_last_us;                 /* the last conversion, for mip_gpu.c's [mipgen] line */
 
 /* The one 2D upload path: convert when we can, charge what was really spent,
  * hand it to vitaGL. Always uploads exactly once. */
@@ -1726,8 +1759,9 @@ static void tex_upload2d_body(GLenum tg, GLint l, GLint ifmt, GLsizei w, GLsizei
     uint16_t *cv = (uint16_t *)malloc((size_t)w * h * 2);
     if (cv) {
       uint64_t c0 = sceKernelGetProcessTimeWide();
-      tex16_pack(cv, (const unsigned char *)px, w, h, kind);
-      stall_part(SP_TEX16, (uint32_t)(sceKernelGetProcessTimeWide() - c0), 0);
+      tex16_pack(cv, (const unsigned char *)px, w, h, kind == TEX16_4444);
+      g_tex16_last_us = (uint32_t)(sceKernelGetProcessTimeWide() - c0);
+      stall_part(SP_TEX16, g_tex16_last_us, 0);
       GLenum ty16 = (kind == TEX16_4444) ? GL_UNSIGNED_SHORT_4_4_4_4
                                          : GL_UNSIGNED_SHORT_5_6_5;
       if (g_cur_tex && g_cur_tex < TEXKIND_MAX && l == 0) {
@@ -1877,7 +1911,7 @@ static void glTexSubImage2D_e(GLenum tg, GLint l, GLint xo, GLint yo, GLsizei w,
       ((kind == TEX16_4444 && f == GL_RGBA) || (kind == TEX16_565 && f == GL_RGB))) {
     uint16_t *cv = (uint16_t *)malloc((size_t)w * h * 2);
     if (cv) {
-      tex16_pack(cv, (const unsigned char *)px, w, h, kind);
+      tex16_pack(cv, (const unsigned char *)px, w, h, kind == TEX16_4444);
       glTexSubImage2D(tg, l, xo, yo, w, h, f,
                       (kind == TEX16_4444) ? GL_UNSIGNED_SHORT_4_4_4_4
                                            : GL_UNSIGNED_SHORT_5_6_5, cv);

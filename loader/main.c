@@ -35,6 +35,7 @@
 #include "ai_budget.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
+#include "pc_prof.h"
 #include "ini_defaults.h"
 #include "crash.h"
 #include "heap.h"
@@ -4622,6 +4623,9 @@ static void *game_main_thread(void *arg) {
 
   g_game_thid = sceKernelGetThreadId();   // publish for the watchdog
   log_printf(">>> game thread UID = 0x%08x", (unsigned)g_game_thid);
+#if PC_PROF
+  pc_prof_start();
+#endif
 
   gl_worker_attach_producer();
   // The GL worker owns core 2; keep the game thread off it.
