@@ -30,6 +30,7 @@ The largest confirmed improvements are:
     - the busy spot runs at 49–53 ms per frame (~19–20 FPS), against ~62 ms before;
     - light scenes (140–155 draws) run at 27–30 ms (34–37 FPS);
     - the gameplay average over an 8-minute session was about 40 ms (~25 FPS).
+17. **Boot and loading screens (section 5.14, v0.4.1):** the archive replay index is written at last: first frame 33.9 → 24.3 s from the second launch on. Large non-power-of-two images are rescaled with NEON and get their mips on the GPU: 2–6 times faster per image (1920x1200: 837 → 354 ms).
 
 Generic door/portal filtering did not reproduce the scoped VIS gain:
 
@@ -419,6 +420,39 @@ Three fixes followed:
 
 What remains is mostly first-time card reads at about 10 MB/s: the minimap's 714 KB image (60 ms), scripts spawning creatures mid-play (one read 3.6 MB in a 368 ms frame), dialog entries and their voice lines. Large non-power-of-two images still take the engine's CPU mip path during loading (up to 2.86 s for one image).
 
+### 5.14 Boot and loading time
+
+**The replay index was never written.** `loader/obb_index.c` records the archives' small reads (up to 4 KB) during the mount and serves them from one file at later boots. KOTOR I's loader mounts the archives itself and then calls `io_obb_mount_done()`; in KOTOR II the engine mounts them and nothing made that call, so every boot made about 60,760 small card reads. The loader now calls it at the first presented frame. Hardware, two boots: first frame 33.9 s, then 24.3 s; card time before the first frame 11.7 s, then 3.5 s (52 reads, 60,768 served from the index). The index is written once, at the first launch of a build.
+
+**Non-power-of-two images.** GLU scales such an image to the power of two nearest in its top two bits and shrinks every level on the CPU (up to 2.86 s for one loading screen). `loader/mip_gpu.c` now rescales level 0 to the same size (bilinear, `image_rescale` in `loader/pixel_ops.c`), uploads it and lets vitaGL make the chain. The 16-bit conversion (`tex16_pack`) is NEON too, byte-identical to the scalar loop (`tools/test_pixel_ops.c`). Hardware, game thread per image:
+
+| Image | Before | After |
+|---|---|---|
+| 2048x2048 RGBA | 429 ms | 187 ms |
+| 1920x1200 RGBA -> 2048x1024 | 837 ms | 354 ms |
+| 1024x767 RGBA -> 1024x512 | 208 ms | 105 ms |
+| 1100x655 RGBA -> 1024x512 | 565 ms (engine) | 91 ms |
+| 1023x1024 RGB -> 1024x1024 | 338 ms (801 ms engine) | 194 ms |
+
+These passes run at about 150 MB/s, so they appear to wait on memory more than on arithmetic.
+
+**Card throughput.** A test build (`CARD_BENCH`) read fresh regions of the main archive at the first frame: 16 KB reads 9.1 MB/s, 64 KB 9.8 MB/s, 512 KB 9.9 MB/s, random 64 KB 9.7 MB/s. Larger or read-ahead reads would not be faster; about 10 MB/s is the card.
+
+**Where the time goes now** (PC profiler, each sample weighted by the time since the previous one, because time outside the engine lands on the engine instruction it returns to):
+- Boot, 23.9 s to the first frame. The library loads, hooks and vitaGL take 0-5.3 s. libObbVfs's file tables take a few seconds: each OBB ends with a zlib-compressed `std::set` of its files (361 and 18,447 entries), whose comparator calls `tolower` four times per character. Key tables, the DLC folder scan and the sound-option ini writes follow (5.3-15.2 s together). `dialog.tlk` into RAM takes 1.0 s and the rules tables 1.0 s. GUI setup is about 6.6 s: 3.5 s reading about 28 MB of large images, the rest CPU on them (`ImageGetAlphaMean`, a float division per pixel, 0.8 s; red/blue swaps in `CResTGA::OnResourceServiced` and back in `CAuroraTexture::Unload`, 0.9 s; `glGenTextures` waiting for the GL worker, 0.7 s; the loader's conversion and rescale, 0.7 s). The legal screen then sleeps 2.5 s.
+- Save load, 24 s. 13.3 s are archive reads. The rest:
+  - `CopyFileA`, 2.2 s: it copies the module into `currentgame/` through a C++ stream, in 4 KB card writes;
+  - loose files under `dlc/`, about 2 s: newlib's stdio buffer is always 1 KB, so they are read 1 KB per card access;
+  - the copied module's key list, 0.8 s: 5,469 reads of about 8 bytes, each after a seek that drops the buffer;
+  - GFF field lookups, about 1 s: `CResGFF::ByteSwap` is a protected wrapper around an empty function;
+  - whole decodes of short sounds, 0.7 s;
+  - GL name round trips, 0.35 s.
+  None of these is changed yet.
+
+**An intermittent slow boot.** About one boot in three spends 12.1-12.7 s instead of about 0.5 s scanning `dlc/mods_english/override` (477 files). This adds about 11.5 s, with or without the profiler and the replay index. `_findfirst` stats every entry while the directory is open. In a slow boot each call takes longer than the one before, from about 7 ms to about 50 ms (+0.1 ms per entry), on the same curve in every slow run. The directory's sectors then seem to be re-read from the card at each lookup, never kept. The trigger is not known: not the build, the profiler, the replay index, the GL worker, thread placement or saving. Answering these `stat` calls from the engine's own `readdir` results would avoid it, but that change is parked.
+
+The profiler itself slows boot code outside the engine (libObbVfs, `stat`) about 2.3 times. Its self samples also cluster at instruction-cache-line boundaries, so the inclusive chains are the reliable figures.
+
 ## 6. Room and visibility experiments
 
 ### 6.1 Scoped VIS edge: successful proof
@@ -642,6 +676,8 @@ The application requests the public `444/222/222/166` MHz profile. A separate PS
 - Pin the game and audio threads to separate cores without new evidence (section 5.12).
 - Trust Vita3K for texture-upload or GPU-copy correctness: it emulates the copy synchronously, and none of the hardware faults above showed in it.
 - Wrap a hook that reads `__builtin_return_address(0)` (`fs_stat`, `ai_list_cache.c`, `bloom_ctl.c`, several in `main.c`): the wrapper becomes the caller (section 5.13).
+- Expect larger or read-ahead card reads to load faster: 16 KB to 512 KB reads all run at 9-10 MB/s (section 5.14).
+- Read unweighted PC-profiler counts as time: time outside the engine (card waits, libObbVfs, vitaGL) counts as one sample however long it lasts (section 5.14).
 
 ## 13. Recommended next work
 
@@ -656,11 +692,10 @@ The application requests the public `444/222/222/166` MHz profile. A separate PS
 9. Isolate post-processing disable while retaining all geometry/lighting gates.
 10. Keep every hardware experiment reversible with exact hashes.
 11. Make occlusion re-tests cheap: query a hidden Gob's bounding box with color and depth writes off instead of re-rendering it. This would recover most of the remaining ~6 ms at the heavy spot and cut pop-in to one frame. It requires restoring exactly the GL state that gles2-bc caches.
-12. Done (sections 5.10, 5.11 and 5.13): stream opens no longer read or decode on the game thread, DXT textures are no longer decoded on the CPU, power-of-two uncompressed images get their mips on the GPU, and loose-file misses no longer touch the card. Next, by expected gain:
-    - non-power-of-two images during loading: scale level 0 to a power of two in the loader and let vitaGL make the chain (up to 2.86 s per image now);
-    - a NEON 16-bit conversion (`tex16_pack`, about 12 ms for the minimap image);
+12. Done (sections 5.10, 5.11, 5.13 and 5.14): stream opens no longer read or decode on the game thread, DXT textures are no longer decoded on the CPU, uncompressed images get their mips on the GPU (non-power-of-two ones rescaled with NEON), loose-file misses no longer touch the card, and the archive replay index is written. Left:
     - loading the minimap image when the area loads instead of at its first draw;
-    - a card throughput benchmark, to see whether larger or read-ahead reads beat the ~10 MB/s seen on first reads.
+    - the intermittent slow boot (section 5.14), parked;
+    - the loading costs measured in section 5.14 (module copy in 4 KB writes, 1 KB loose reads, GFF lookups, image passes), each worth 0.3-2 s.
 13. NWScript: `k_ai_master` costs about 17 ms per run and is interpreter-bound (4.5–7 ms per frame, about 18 ms in combat).
 14. The draw path is the rest of the translation cost: about 39 µs per draw, ~21 µs in gles2-bc's shader and state preparation and ~15 µs in vitaGL's `glDrawElements` (section 4.3). `glBindTexture` and `glBindProgramARB` are not safe to filter simply. Some engine code binds textures in vitaGL directly, and the program depends on the fog and alpha flags.
 15. Done (section 5.7): a GL worker thread at the vitaGL boundary.
@@ -711,8 +746,13 @@ rendering defects.
 | minimp3 overflow, every other stream forced (section 5.11) | `3d2198050ac0103415900927d2174b9f715d833e512099a5afee4796f40bf7fe` |
 | Stall breakdown + mip A/B (section 5.13) | `76ecb0d4b94ee192bb7f7b5486824c920d00564f624b7724d5939cd37ef52ef8` |
 | Stall breakdown + misses, GPU mips, cached sounds (section 5.13) | `79b6d45d0c511d75b049faac637e3dd29b662060bedd3af9cc9c9f96b8e83dec` |
+| Replay index, NEON image paths, card benchmark (section 5.14) | `e61feee1a0a488938bc570922cf2811ea560b186cd3276ffc75a36e7295b341c` |
+| The same with the PC profiler (section 5.14) | `9495a28cb0f6fa201ac4842f14ff692ea9f94dde0e998596e4c56ae836b8efaf` |
+| v0.4.1 eboot | `24feb8be0fa03e62dee2300a296421ccfbd82df53b60c10b393f6dbd257b5540` |
 
 ## 15. Current decision
+
+v0.4.1 is v0.4.0 plus section 5.14: the archive replay index is written (first frame about 24 s instead of 34 s from the second launch on), and loading-screen images whose sides are not powers of two are rescaled with NEON and get their mips on the GPU. Frame rate is as in v0.4.0.
 
 v0.4.0 is v0.3.0 plus the stall fixes of sections 5.10, 5.11 and 5.13: native DXT uploads, streamed music and voice with minimp3 overflow, GPU mip chains for uncompressed images, loose-file misses answered from folder listings, and cached held sounds found from their head and tail. Average frame rate is as in v0.3.0. The 0.3-0.65 s hitches at music starts and changes, voice lines and first-time textures are gone; first-time content loads still reach 0.12-0.23 s, occasionally more (a script spawning content mid-play took 368 ms).
 

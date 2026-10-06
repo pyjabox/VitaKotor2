@@ -14,13 +14,14 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.4.0). Core gameplay and the major
+**Playable work in progress (v0.4.1). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
-in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removes most of the
+in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
 remaining hitches: music changes, first-time textures and images, and voice
-lines no longer freeze the game for 0.3–0.6 s. Performance tuning and broad
-playthrough validation remain active.**
+lines no longer freeze the game for 0.3–0.6 s. v0.4.1 brings the boot to the
+title from about 34 s to about 24 s and builds loading-screen images 2–6 times
+faster. Performance tuning and broad playthrough validation remain active.**
 
 ### Working and validated
 
@@ -55,6 +56,7 @@ window in the tested gameplay. Each change below was A/B-tested on hardware; the
 | v0.2.0 | about 13 FPS | — |
 | v0.3.0 | about 19–20 FPS (49–53 ms) | 34–37 FPS (27–30 ms) |
 | v0.4.0 | as v0.3.0; music, texture and voice-line hitches removed | as v0.3.0 |
+| v0.4.1 | as v0.4.0; boot about 24 s instead of 34 s | as v0.4.0 |
 
 What is enabled by default:
 
@@ -104,18 +106,26 @@ What is enabled by default:
   - **No card access for missing loose files:** the engine looks for loose
     copies of nearly every resource first; misses in the read-only folders are
     now answered from memory.
+- **New in v0.4.1:**
+  - **Faster boot:** the loader's index of the archives' small reads was never
+    saved in KOTOR II, so every boot made about 60,000 small card reads. It is
+    now saved at the first launch: the title appears after about 24 s instead
+    of 34 s from the second launch on.
+  - **Faster loading-screen images:** images whose sides are not powers of two
+    are rescaled in the loader with NEON and get their mips on the GPU, and the
+    16-bit conversion uses NEON (1920x1200: 837 → 354 ms).
 
 ### Remaining limitations
 
 | Area | Current behavior |
 |---|---|
-| Startup | A cold launch can remain black for roughly two minutes while archives are scanned and shaders compile. Wait before assuming the process has hung. |
+| Startup | A cold launch can remain black for roughly two minutes while archives are scanned and shaders compile. Wait before assuming the process has hung. Later launches reach the title in about 24 s; about one launch in three takes about 11 s longer, in the engine's scan of `dlc/` (cause not yet known). |
 | Performance | Heavy scenes remain CPU-bound, mostly in the engine's per-object rendering work: about 19–20 FPS in the busiest tested scenes. A 10 m distance filter can reduce draws further but remains too experimental for releases. See the [performance reference](docs/specs/PERFORMANCE.md). |
 | Visual changes | There are no dynamic shadows: the loader sets the game's own `Shadows=0` (and `Soft Shadows=0`) in `swkotor2.ini` at every launch. The in-game option still works until the next launch. The mobile bloom passes are skipped (no game option controls them). Rooms keep their baked lighting. |
 | AI updates | The server AI gets 3 ms per frame instead of 10 ms, so each object is updated less often (creatures about every third frame in busy areas). Nothing was noticed in testing, but reactions in very crowded scenes may lag slightly. |
 | Audio | Known issue: some sounds can cut in and out. Under investigation. |
 | Latency | The GL worker lets the game run up to one frame ahead of the display. An object stepping out from cover can appear up to three frames late (occlusion culling). |
-| Hitches | Occasional single frames of about 0.12–0.23 s remain when new content is first read from the memory card (about 10 MB/s): the minimap's first draw, dialog entries and their voices, creatures spawned by scripts. Loading screens still build some large images on the CPU. |
+| Hitches | Occasional single frames of about 0.12–0.23 s remain when new content is first read from the memory card (about 10 MB/s): the minimap's first draw, dialog entries and their voices, creatures spawned by scripts. Loading-screen images still take about 0.1–0.35 s each. |
 | Shader cache | Releases use the validated cache-enabled/no-`LOG_ERRORS` vitaGL recipe, which removes major first-use shader stalls and includes a uniform-overflow clamp. An older cache experiment faulted on a warm launch, so cache recovery remains documented and broader validation is ongoing. |
 | Validation | The tested routes, saves, menus, audio, and movies work, but a complete start-to-finish playthrough has not yet been certified. |
 | Text entry | Printable ASCII is supported. Emulator builds may provide a desktop fallback when the emulated common-dialog keyboard does not appear. |
