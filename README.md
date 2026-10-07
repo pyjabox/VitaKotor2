@@ -114,6 +114,15 @@ What is enabled by default:
   - **Faster loading-screen images:** images whose sides are not powers of two
     are rescaled in the loader with NEON and get their mips on the GPU, and the
     16-bit conversion uses NEON (1920x1200: 837 → 354 ms).
+- **On main since v0.4.1 (not yet in a release):**
+  - **30 FPS cap:** each frame is shown for exactly two screen refreshes, so
+    light scenes (34–37 FPS before, unevenly) run at an even 30 FPS. Heavy
+    scenes are below 30 anyway. Vsync stays on; turning it off measured no
+    faster.
+  - **Optional, off by default: far rooms left out.** With
+    `ux0:data/kotor2/room_distance.txt` (see Troubleshooting), rooms beyond a
+    distance are not drawn: up to about 25% faster where long views open, with
+    distant geometry missing.
 
 ### Remaining limitations
 
@@ -239,6 +248,8 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Rendering problems you suspect the GL worker of | Create `ux0:data/kotor2/glw_mode.txt` containing `0` and relaunch. vitaGL then runs on the game thread, as in v0.2.0. Delete the file to turn the worker back on. |
 | Texture problems you suspect the native DXT path of | Create `ux0:data/kotor2/dxt_mode.txt` containing `0` and relaunch. DXT textures are then decoded on the CPU, as in v0.3.0. Delete the file to turn the native path back on. |
 | Image problems you suspect the GPU mipmaps of | Create `ux0:data/kotor2/mipgen_mode.txt` containing `0` and relaunch. The engine then builds every mip chain on the CPU, as in v0.3.0. Delete the file to turn it back on. |
+| You want more than 30 FPS in light scenes | Create `ux0:data/kotor2/fps_cap.txt` containing `0` and relaunch. `LockFramerate=1` under `[Graphics Options]` in `swkotor2.ini` then caps the game again, and `V-Sync=0` turns vsync off (measured no faster). Delete the file to bring the cap back. |
+| Low frame rate in areas with long views | Create `ux0:data/kotor2/room_distance.txt` containing a distance in metres, for example `35`, and relaunch. Rooms farther than that from the camera are not drawn: distant geometry disappears (Peragus, 17 rooms beyond 35 m: 66.7 → 51.0 ms per frame). Delete the file to draw every room again. |
 
 Releases omit vitaGL's animated splash but enable the custom GLSL disk cache as
 part of the validated high-performance recipe. If a warm launch black-screens,

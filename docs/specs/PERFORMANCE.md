@@ -31,6 +31,8 @@ The largest confirmed improvements are:
     - light scenes (140–155 draws) run at 27–30 ms (34–37 FPS);
     - the gameplay average over an 8-minute session was about 40 ms (~25 FPS).
 17. **Boot and loading screens (section 5.14, v0.4.1):** the archive replay index is written at last: first frame 33.9 → 24.3 s from the second launch on. Large non-power-of-two images are rescaled with NEON and get their mips on the GPU: 2–6 times faster per image (1920x1200: 837 → 354 ms).
+18. **30 FPS cap (section 5.15, on main since v0.4.1):** each frame is shown for two vblanks. Vsync off measured no faster.
+19. **Rooms beyond a distance, opt-in (section 6.7):** up to about 25% faster in long views, with distant geometry missing.
 
 Generic door/portal filtering did not reproduce the scoped VIS gain:
 
@@ -453,6 +455,14 @@ These passes run at about 150 MB/s, so they appear to wait on memory more than o
 
 The profiler itself slows boot code outside the engine (libObbVfs, `stat`) about 2.3 times. Its self samples also cluster at instruction-cache-line boundaries, so the inclusive chains are the reliable figures.
 
+### 5.15 Frame pacing: vsync and a 30 FPS cap
+
+vitaGL's display callback sets the new framebuffer for the next vblank, then waits `vsync_interval` vblanks: 1 by default, so frames were paced to 60 Hz. The game's own options never reached it. `V-Sync` goes through `wglSwapIntervalEXT` to `SDL_GL_SetSwapInterval`, which the loader stubs, and the game calls it twice at startup with 1 anyway. `LockFramerate` only makes `WinMain` sleep up to `limitFPS`, a constant 60.0.
+
+**Vsync off is no faster.** A test build (`VSYNC_AB`) switched vsync on and off every 10 s on hardware. Over 17 gameplay windows, with each window's draws per frame from the `[DRAW_FRAME]` counters, the fit gave frame = 10.4 ms + 0.136 ms per draw, and vsync off −2.1 ms (±2.3) on the mean, −1.3 ms (±1.8) on the median: no measurable difference. With vsync on, frame times are not quantised to 16.7 ms steps (medians 25, 29, 32, 40 ms). The display queue holds one buffer less than vitaGL has, so it absorbs the vblank wait below 60 FPS.
+
+**30 FPS cap, on by default** (`loader/frame_pace.c`, `FRAME_CAP_30`). The interval is 2: each frame is shown for two vblanks. Light scenes ran at 34–37 FPS, unevenly; heavy ones are below 30 anyway. The display queue then holds the GL worker, and the game behind it, at that rate: Vita3K showed 30.0 FPS in gameplay against 60.0 uncapped. `ux0:data/kotor2/fps_cap.txt` containing `0` removes the cap. `[Graphics Options]` in `swkotor2.ini` then decides: `LockFramerate=1` caps again (the game's toggle, `g_bFrameRateLocked`, is followed while playing), `V-Sync=0` turns vsync off, otherwise vsync is on.
+
 ## 6. Room and visibility experiments
 
 ### 6.1 Scoped VIS edge: successful proof
@@ -537,6 +547,20 @@ Hardware A/B at the heaviest spot (about 44 Gobs per frame, room-mesh pass about
 Across every window of the run, the ratio of Gob pass to room-mesh pass (independent of menu frames) had a median of 1.01 with culling on (12 windows) and 1.92 with it off (5 windows). At a lighter spot (mesh pass about 9.5 ms) the Gob pass went from about 15 to 9 ms. All other passes were unchanged. No artefacts were seen while playing. A Gob stepping out from cover can appear up to 3 frames late, about 0.2 s at 15 FPS, which was not noticeable.
 
 With culling on, about 6 ms per frame at the heavy spot still goes to rendering Gobs that are hidden: the re-tests, plus the two frames before a Gob is first skipped.
+
+### 6.7 Rooms beyond a distance: opt-in
+
+The engine renders every room that passes its VIS list and the camera planes (`CollectActiveRooms`), however far it is. In earlier logs, 41% of the sampled active rooms in `001ebo` and 9% in `101per` were beyond 35 m, up to 84 m. A room left out of that list adds no meshes and no objects to the frame. Its draws cannot be wrapped in an occlusion query like a Gob's, though: `ManageSceneBSP` sorts every room's meshes into shared material buckets. A visibility test would have to query each room's bounding box instead.
+
+To size the gain first, a test build (`ROOM_AB`) dropped every room beyond 35 m in alternate 10 s windows, keeping the current room and the forced ones. Hardware, Peragus, same views:
+
+| Spot | Rooms beyond 35 m | All rooms | Far rooms dropped |
+|---|---:|---:|---:|
+| Standing, long view | 17 | 66.7 ms, 489 draws | 51.0 ms, 318 draws |
+| Second spot | 4 | 42.5 ms, 316 draws | 34.9 ms, 231 draws |
+| Walking | 6–7 | 50.1 ms, 283 draws | 47.4 ms, 225 draws |
+
+Windows with no room beyond 35 m did not change. Distant geometry disappears, so it is an opt-in (`loader/room_dist.c`): `ux0:data/kotor2/room_distance.txt` containing a distance in metres (10–1000) turns it on. A room left out comes back 2 m inside the distance, so a room on the edge does not flicker. Without the file nothing is hooked. A box-query version, leaving out only far rooms that are hidden, would keep the image intact and save part of this. Rooms with degenerate boxes would need excluding (`001ebo16`–`18` are 10 × 10 × 0 m placeholders).
 
 ## 7. Shader compilation and cache
 
@@ -677,6 +701,7 @@ The application requests the public `444/222/222/166` MHz profile. A separate PS
 - Trust Vita3K for texture-upload or GPU-copy correctness: it emulates the copy synchronously, and none of the hardware faults above showed in it.
 - Wrap a hook that reads `__builtin_return_address(0)` (`fs_stat`, `ai_list_cache.c`, `bloom_ctl.c`, several in `main.c`): the wrapper becomes the caller (section 5.13).
 - Expect larger or read-ahead card reads to load faster: 16 KB to 512 KB reads all run at 9-10 MB/s (section 5.14).
+- Turn vsync off for speed: no measurable difference below 60 FPS (section 5.15).
 - Read unweighted PC-profiler counts as time: time outside the engine (card waits, libObbVfs, vitaGL) counts as one sample however long it lasts (section 5.14).
 
 ## 13. Recommended next work
@@ -695,7 +720,8 @@ The application requests the public `444/222/222/166` MHz profile. A separate PS
 12. Done (sections 5.10, 5.11, 5.13 and 5.14): stream opens no longer read or decode on the game thread, DXT textures are no longer decoded on the CPU, uncompressed images get their mips on the GPU (non-power-of-two ones rescaled with NEON), loose-file misses no longer touch the card, and the archive replay index is written. Left:
     - loading the minimap image when the area loads instead of at its first draw;
     - the intermittent slow boot (section 5.14), parked;
-    - the loading costs measured in section 5.14 (module copy in 4 KB writes, 1 KB loose reads, GFF lookups, image passes), each worth 0.3-2 s.
+    - the loading costs measured in section 5.14 (module copy in 4 KB writes, 1 KB loose reads, GFF lookups, image passes), each worth 0.3-2 s;
+    - a bounding-box occlusion test for rooms beyond a distance (section 6.7), to save part of the opt-in's gain without losing distant geometry.
 13. NWScript: `k_ai_master` costs about 17 ms per run and is interpreter-bound (4.5–7 ms per frame, about 18 ms in combat).
 14. The draw path is the rest of the translation cost: about 39 µs per draw, ~21 µs in gles2-bc's shader and state preparation and ~15 µs in vitaGL's `glDrawElements` (section 4.3). `glBindTexture` and `glBindProgramARB` are not safe to filter simply. Some engine code binds textures in vitaGL directly, and the program depends on the fog and alpha flags.
 15. Done (section 5.7): a GL worker thread at the vitaGL boundary.
@@ -749,8 +775,13 @@ rendering defects.
 | Replay index, NEON image paths, card benchmark (section 5.14) | `e61feee1a0a488938bc570922cf2811ea560b186cd3276ffc75a36e7295b341c` |
 | The same with the PC profiler (section 5.14) | `9495a28cb0f6fa201ac4842f14ff692ea9f94dde0e998596e4c56ae836b8efaf` |
 | v0.4.1 eboot | `24feb8be0fa03e62dee2300a296421ccfbd82df53b60c10b393f6dbd257b5540` |
+| Rooms beyond 35 m, A/B (section 6.7) | `82f6a7d219f8457b0687b631ecbad2f7bb743c6b4a7e66667edbcefebe8e535e` |
+| Vsync on/off, A/B (section 5.15) | `e2ccb433c2714975adf6e3c2236281ea6d2d729e07b1c75ffcdb8e87eaac6c79` |
+| main after v0.4.1: 30 FPS cap, room distance opt-in | `4d6eb9d9b79d57e648b187be592ee904b737577b14b6fb75af6f3648aaf402c3` |
 
 ## 15. Current decision
+
+main after v0.4.1 adds the 30 FPS cap by default (section 5.15; vsync stays on) and the opt-in room distance (section 6.7).
 
 v0.4.1 is v0.4.0 plus section 5.14: the archive replay index is written (first frame about 24 s instead of 34 s from the second launch on), and loading-screen images whose sides are not powers of two are rescaled with NEON and get their mips on the GPU. Frame rate is as in v0.4.0.
 
