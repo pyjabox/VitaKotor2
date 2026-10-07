@@ -76,6 +76,8 @@ add_executable(KOTOR2
   loader/mip_gpu.c
   loader/pixel_ops.c
   loader/pc_prof.c
+  loader/room_dist.c
+  loader/frame_pace.c
   loader/stall_parts.c
   loader/autotest.c
   loader/glsl_prep.c

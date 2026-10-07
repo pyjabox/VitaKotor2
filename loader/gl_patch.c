@@ -35,6 +35,8 @@
 #include "mip_gpu.h"
 #include "stall_parts.h"
 #include "pixel_ops.h"
+#include "room_dist.h"
+#include "frame_pace.h"
 #include "gl_patch.h"
 #include "glsl_prep.h"
 #include "dynlib.h"
@@ -430,6 +432,9 @@ static unsigned g_arrays_tot = 0, g_elements_tot = 0;
 static unsigned g_clears_frame = 0;
 #if DRAW_FRAME_BENCHMARK_ENABLE
 static uint64_t g_draw_frame_draws = 0;
+#if ROOM_AB
+static uint64_t g_draws_total;            /* never reset: room_dist.c takes per-frame deltas */
+#endif
 static uint64_t g_draw_frame_frames = 0;
 static uint64_t g_draw_frame_start_us = 0;
 #endif
@@ -814,6 +819,9 @@ static void glDrawArrays_t(GLenum mode, GLint first, GLsizei count) {
   if (loadscreen_active()) loadscreen_end();
 #if DRAW_FRAME_BENCHMARK_ENABLE
   g_draw_frame_draws++;
+#if ROOM_AB
+  g_draws_total++;
+#endif
 #endif
   glDrawArrays(mode, first, count);
   return;
@@ -841,6 +849,9 @@ static void glDrawElements_t(GLenum mode, GLsizei count, GLenum type, const void
   if (loadscreen_active()) loadscreen_end();
 #if DRAW_FRAME_BENCHMARK_ENABLE
   g_draw_frame_draws++;
+#if ROOM_AB
+  g_draws_total++;
+#endif
 #endif
   glDrawElements(mode, count, type, idx);
   return;
@@ -966,6 +977,10 @@ static void card_bench(void) {
 void gl_patch_on_swap(uint64_t swap_begin_us, uint64_t swap_end_us) {
   static int s_first_done;
   if (!s_first_done) { s_first_done = 1; first_frame(swap_end_us); }
+  frame_pace_frame(swap_end_us);
+#if ROOM_AB && DRAW_FRAME_BENCHMARK_ENABLE
+  room_dist_frame(swap_end_us, g_draws_total);
+#endif
 #if !PERFORMANCE_TELEMETRY_ENABLE
   (void)swap_begin_us;
 #if DRAW_FRAME_BENCHMARK_ENABLE

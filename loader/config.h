@@ -699,6 +699,26 @@
 #define PC_PROF                   0
 #endif
 #define PC_PROF_PERIOD_US         3000
+// Rooms beyond the distance in ux0:data/kotor2/room_distance.txt are not drawn
+// (loader/room_dist.c, opt-in). Test builds (ROOM_AB): beyond ROOM_AB_RADIUS_M
+// in alternate windows, with a [roomab] line per window.
+#ifndef ROOM_AB
+#define ROOM_AB                   0
+#endif
+#define ROOM_AB_RADIUS_M          35
+#define ROOM_AB_WINDOW_S          10
+// 30 FPS at most: each frame shown for two vblanks (loader/frame_pace.c).
+// ux0:data/kotor2/fps_cap.txt containing 0 removes the cap, leaving
+// swkotor2.ini's LockFramerate and V-Sync to decide.
+#ifndef FRAME_CAP_30
+#define FRAME_CAP_30              1
+#endif
+// Test builds: vsync on and off in alternate windows, with a [vsync-ab] line
+// per window (loader/frame_pace.c).
+#ifndef VSYNC_AB
+#define VSYNC_AB                  0
+#endif
+#define VSYNC_AB_WINDOW_S         10
 // Test builds: a memory-card read benchmark at the first frame (gl_patch.c).
 #ifndef CARD_BENCH
 #define CARD_BENCH                0

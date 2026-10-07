@@ -5,5 +5,7 @@
 
 /* In main(), before the game starts and reads its options. */
 void ini_defaults_apply(void);
+/* A whole-number value from [Graphics Options], or def if absent. */
+int ini_graphics_int(const char *key, int def);
 
 #endif

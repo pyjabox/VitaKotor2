@@ -109,6 +109,22 @@ static int set_keys(char **text, int *len, const char *section, ini_key_t *keys,
   return changed;
 }
 
+int ini_graphics_int(const char *key, int def) {
+  int len = 0, in_section = 0, value = def;
+  char *text = read_file(INI_PATH, &len);
+  if (!text) return def;
+  for (const char *p = text, *eof = text + len; p < eof; ) {
+    const char *e = memchr(p, '\n', eof - p), *next = e ? e + 1 : eof, *end = e ? e : eof;
+    if (*p == '[')
+      in_section = !strncasecmp(p, "[Graphics Options]", 18);
+    else if (in_section && is_key(p, end, key))
+      value = atoi(p + strlen(key) + 1);
+    p = next;
+  }
+  free(text);
+  return value;
+}
+
 void ini_defaults_apply(void) {
 #if INI_NO_SHADOWS
   ini_key_t keys[] = {{"Shadows", "0", 0}, {"Soft Shadows", "0", 0}};

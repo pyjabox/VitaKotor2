@@ -6,7 +6,7 @@
  * (mirroring TheOfficialFloW/Rinnegatamante so-loader ports):
  *   SDL_CreateWindow     -> force the 960x544 Vita window
  *   SDL_RWFromFile       -> translate Android paths to DATA_PATH first
- *   SDL_GL_SetSwapInterval-> ret0 (vsync handled by GXM)
+ *   SDL_GL_SetSwapInterval-> logged only (vsync: frame_pace.c)
  *   SDL_IsChromebook     -> ret0 (not present in Vita SDL2)
  *
  * g_SDL_BufferGeometry_w/h are game globals defined in NEITHER .so, so we own
@@ -37,6 +37,7 @@
 #include "log.h"
 
 extern int ret0(void);   // from dynlib.c
+#include "frame_pace.h"
 
 // Game-owned globals we must provide (framebuffer geometry).
 int g_SDL_BufferGeometry_w = SCREEN_W;
@@ -545,7 +546,7 @@ static const so_default_dynlib sdl_dynlib[] = {
   { "SDL_GL_MakeCurrent",          (uintptr_t)&ret0 },
   { "SDL_GL_DeleteContext",        (uintptr_t)&ret0 },
   { "SDL_GL_SetAttribute",         (uintptr_t)&ret0 },
-  { "SDL_GL_SetSwapInterval",      (uintptr_t)&ret0 },
+  { "SDL_GL_SetSwapInterval",      (uintptr_t)&frame_pace_swap_interval },
   { "SDL_GL_SwapWindow",           (uintptr_t)&SDL_GL_SwapWindow_hook },
   { "SDL_AddEventWatch",           (uintptr_t)&SDL_AddEventWatch },
   { "SDL_AddTimer",                (uintptr_t)&SDL_AddTimer },

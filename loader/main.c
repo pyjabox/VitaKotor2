@@ -36,6 +36,8 @@
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
+#include "room_dist.h"
+#include "frame_pace.h"
 #include "ini_defaults.h"
 #include "crash.h"
 #include "heap.h"
@@ -4804,6 +4806,8 @@ int main(int argc, char *argv[]) {
   ai_budget_install();
   dxt_native_install();
   mip_gpu_install();
+  room_dist_install();
+  frame_pace_init();
 #if GL_WORKER_PROFILE
   glw_prof_install();
 #endif
