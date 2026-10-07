@@ -14,14 +14,15 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.4.1). Core gameplay and the major
+**Playable work in progress (v0.4.2). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
 remaining hitches: music changes, first-time textures and images, and voice
-lines no longer freeze the game for 0.3–0.6 s. v0.4.1 brings the boot to the
-title from about 34 s to about 24 s and builds loading-screen images 2–6 times
-faster. Performance tuning and broad playthrough validation remain active.**
+lines no longer freeze the game for 0.3–0.6 s. v0.4.2 brings the boot to the
+title from about 34 s to about 24 s, builds loading-screen images 2–6 times
+faster and caps the frame rate at an even 30 FPS. Performance tuning and broad
+playthrough validation remain active.**
 
 ### Working and validated
 
@@ -56,7 +57,7 @@ window in the tested gameplay. Each change below was A/B-tested on hardware; the
 | v0.2.0 | about 13 FPS | — |
 | v0.3.0 | about 19–20 FPS (49–53 ms) | 34–37 FPS (27–30 ms) |
 | v0.4.0 | as v0.3.0; music, texture and voice-line hitches removed | as v0.3.0 |
-| v0.4.1 | as v0.4.0; boot about 24 s instead of 34 s | as v0.4.0 |
+| v0.4.2 | as v0.4.0; boot about 24 s instead of 34 s | 30 FPS (capped; 34–37 uncapped) |
 
 What is enabled by default:
 
@@ -106,7 +107,7 @@ What is enabled by default:
   - **No card access for missing loose files:** the engine looks for loose
     copies of nearly every resource first; misses in the read-only folders are
     now answered from memory.
-- **New in v0.4.1:**
+- **New in v0.4.2:**
   - **Faster boot:** the loader's index of the archives' small reads was never
     saved in KOTOR II, so every boot made about 60,000 small card reads. It is
     now saved at the first launch: the title appears after about 24 s instead
@@ -114,7 +115,6 @@ What is enabled by default:
   - **Faster loading-screen images:** images whose sides are not powers of two
     are rescaled in the loader with NEON and get their mips on the GPU, and the
     16-bit conversion uses NEON (1920x1200: 837 → 354 ms).
-- **On main since v0.4.1 (not yet in a release):**
   - **30 FPS cap:** each frame is shown for exactly two screen refreshes, so
     light scenes (34–37 FPS before, unevenly) run at an even 30 FPS. Heavy
     scenes are below 30 anyway. Vsync stays on; turning it off measured no

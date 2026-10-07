@@ -30,9 +30,9 @@ The largest confirmed improvements are:
     - the busy spot runs at 49–53 ms per frame (~19–20 FPS), against ~62 ms before;
     - light scenes (140–155 draws) run at 27–30 ms (34–37 FPS);
     - the gameplay average over an 8-minute session was about 40 ms (~25 FPS).
-17. **Boot and loading screens (section 5.14, v0.4.1):** the archive replay index is written at last: first frame 33.9 → 24.3 s from the second launch on. Large non-power-of-two images are rescaled with NEON and get their mips on the GPU: 2–6 times faster per image (1920x1200: 837 → 354 ms).
-18. **30 FPS cap (section 5.15, on main since v0.4.1):** each frame is shown for two vblanks. Vsync off measured no faster.
-19. **Rooms beyond a distance, opt-in (section 6.7):** up to about 25% faster in long views, with distant geometry missing.
+17. **Boot and loading screens (section 5.14, v0.4.2):** the archive replay index is written at last: first frame 33.9 → 24.3 s from the second launch on. Large non-power-of-two images are rescaled with NEON and get their mips on the GPU: 2–6 times faster per image (1920x1200: 837 → 354 ms).
+18. **30 FPS cap (section 5.15, v0.4.2):** each frame is shown for two vblanks. Vsync off measured no faster.
+19. **Rooms beyond a distance, opt-in (section 6.7, v0.4.2):** up to about 25% faster in long views, with distant geometry missing.
 
 Generic door/portal filtering did not reproduce the scoped VIS gain:
 
@@ -774,16 +774,18 @@ rendering defects.
 | Stall breakdown + misses, GPU mips, cached sounds (section 5.13) | `79b6d45d0c511d75b049faac637e3dd29b662060bedd3af9cc9c9f96b8e83dec` |
 | Replay index, NEON image paths, card benchmark (section 5.14) | `e61feee1a0a488938bc570922cf2811ea560b186cd3276ffc75a36e7295b341c` |
 | The same with the PC profiler (section 5.14) | `9495a28cb0f6fa201ac4842f14ff692ea9f94dde0e998596e4c56ae836b8efaf` |
-| v0.4.1 eboot | `24feb8be0fa03e62dee2300a296421ccfbd82df53b60c10b393f6dbd257b5540` |
+| v0.4.1 eboot (main 300ac7d, not released) | `24feb8be0fa03e62dee2300a296421ccfbd82df53b60c10b393f6dbd257b5540` |
 | Rooms beyond 35 m, A/B (section 6.7) | `82f6a7d219f8457b0687b631ecbad2f7bb743c6b4a7e66667edbcefebe8e535e` |
 | Vsync on/off, A/B (section 5.15) | `e2ccb433c2714975adf6e3c2236281ea6d2d729e07b1c75ffcdb8e87eaac6c79` |
-| main after v0.4.1: 30 FPS cap, room distance opt-in | `4d6eb9d9b79d57e648b187be592ee904b737577b14b6fb75af6f3648aaf402c3` |
+| v0.4.2 eboot | `4d6eb9d9b79d57e648b187be592ee904b737577b14b6fb75af6f3648aaf402c3` |
 
 ## 15. Current decision
 
-main after v0.4.1 adds the 30 FPS cap by default (section 5.15; vsync stays on) and the opt-in room distance (section 6.7).
-
-v0.4.1 is v0.4.0 plus section 5.14: the archive replay index is written (first frame about 24 s instead of 34 s from the second launch on), and loading-screen images whose sides are not powers of two are rescaled with NEON and get their mips on the GPU. Frame rate is as in v0.4.0.
+v0.4.2 is v0.4.0 plus:
+- section 5.14: the archive replay index is written (first frame about 24 s instead of 34 s from the second launch on), and loading-screen images whose sides are not powers of two are rescaled with NEON and get their mips on the GPU;
+- section 5.15: a 30 FPS cap by default, with vsync on;
+- section 6.7: the opt-in room distance.
+v0.4.1 was a step on main, not released.
 
 v0.4.0 is v0.3.0 plus the stall fixes of sections 5.10, 5.11 and 5.13: native DXT uploads, streamed music and voice with minimp3 overflow, GPU mip chains for uncompressed images, loose-file misses answered from folder listings, and cached held sounds found from their head and tail. Average frame rate is as in v0.3.0. The 0.3-0.65 s hitches at music starts and changes, voice lines and first-time textures are gone; first-time content loads still reach 0.12-0.23 s, occasionally more (a script spawning content mid-play took 368 ms).
 
