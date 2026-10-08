@@ -58,6 +58,7 @@ add_executable(KOTOR2
   loader/ime_patch.c
   loader/gl_patch.c
   loader/gl_worker.c
+  loader/gxm_patcher.c
   loader/glw_gen.c
   loader/glw_prof.c
   loader/occlusion_cull.c
@@ -217,6 +218,13 @@ add_custom_command(TARGET KOTOR2.vpk-vpk POST_BUILD
 # wrapped at link time, so all GL calls go through the worker's command stream.
 include(${CMAKE_SOURCE_DIR}/cmake/glw_wraps.cmake)
 target_link_libraries(KOTOR2 ${GLW_WRAP_FLAGS})
+# vitaGL takes a vertex program from the shader patcher on every draw and never
+# releases one; loader/gxm_patcher.c keeps the pool from filling.
+target_link_libraries(KOTOR2
+  -Wl,--wrap=sceGxmShaderPatcherCreateVertexProgram
+  -Wl,--wrap=sceGxmShaderPatcherCreateFragmentProgram
+  -Wl,--wrap=sceGxmShaderPatcherForceUnregisterProgram
+  -Wl,--wrap=sceGxmSetVertexProgram)
 
 option(KOTOR_AUTOTEST "Drive menus and gameplay with scripted controller input" OFF)
 set(KOTOR_AUTOTEST_PLAY_SECONDS 120 CACHE STRING "Autotest gameplay duration")

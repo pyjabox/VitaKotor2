@@ -159,6 +159,22 @@
 #define LOADSCREEN_TEST_HOLD_S    0
 #endif
 
+// Vertex-program pool (loader/gxm_patcher.c). vitaGL takes vertex USSE memory
+// for every new pair of shader and vertex layout and never frees it; once its
+// default 1 MB pool is full, new layouts draw with the wrong program and the
+// geometry tears into spikes until relaunch (the KOTOR I port hit it after
+// about 20 minutes; an 83-minute session there peaked at 2 MB with the fix).
+// The pool is GXMP_VERTEX_USSE_KB, taken from vitaGL's RAM; past that, idle
+// variants are freed when a create fails. GXMP_MEMO answers vitaGL's per-draw
+// request for a variant it already has without the patcher. A [gxmp] line
+// every GXMP_REPORT_S shows the pool. ux0:data/kotor2/patcher_mode.txt
+// containing 0 turns the freeing and the memo off.
+#ifndef GXMP_VERTEX_USSE_KB
+#define GXMP_VERTEX_USSE_KB       4096  // test builds: smaller, to force evictions
+#endif
+#define GXMP_MEMO                 1
+#define GXMP_REPORT_S             60
+
 // Per-call GL trace budget. Every traced call is one sceIoWrite to the memory
 // card, and log125/126 measured what that costs: gaps after a log line sit at a
 // flat ~8-11ms floor regardless of WHICH line it was, and the two slowest gaps

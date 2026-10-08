@@ -32,6 +32,7 @@
 #include "stall_parts.h"
 #include "gl_worker.h"
 #include "gl_worker_internal.h"
+#include "gxm_patcher.h"
 
 struct glw_ro glw_ro;
 /* Also set up once, then only read. */
@@ -764,6 +765,7 @@ void __wrap_vglSwapBuffers(GLboolean has_commondialog) {
   GLW_PROF(4);
   if (glw_direct()) {
     __real_vglSwapBuffers(has_commondialog);
+    gxmp_on_swap();
     if (glw_ro.mode == 0) glw_report();
     return;
   }
@@ -858,7 +860,7 @@ static void execute(uint32_t *c, uint32_t *ret) {
     break;
   case COP_DRAW_ARRAYS_RAW: __real_glDrawArrays(a[0], (GLint)a[1], (GLsizei)a[2]); break;
   case COP_DRAW_ELEMENTS_RAW: __real_glDrawElements(a[0], (GLsizei)a[1], a[2], (const void *)(uintptr_t)a[3]); break;
-  case COP_SWAP: __real_vglSwapBuffers((GLboolean)a[0]); poll_queries(); break;
+  case COP_SWAP: __real_vglSwapBuffers((GLboolean)a[0]); gxmp_on_swap(); poll_queries(); break;
   case COP_ENABLE: if (a[1]) __real_glEnable(a[0]); else __real_glDisable(a[0]); break;
   case COP_BIND_FB: __real_glBindFramebuffer(a[0], a[1]); break;
   case COP_SCISSOR: __real_glScissor((GLint)a[0], (GLint)a[1], (GLsizei)a[2], (GLsizei)a[3]); break;
