@@ -1,6 +1,6 @@
 # KOTOR II Vita performance
 
-**Last updated:** 2026-10-04
+**Last updated:** 2026-10-08
 **Status:** Canonical performance document
 
 This is the single source of truth for KOTOR II Vita performance work. It consolidates the former gameplay-performance, optimization-research, and dynamic-room-culling documents. Update this file instead of creating another performance spec.
@@ -779,8 +779,11 @@ rendering defects.
 | Rooms beyond 35 m, A/B (section 6.7) | `82f6a7d219f8457b0687b631ecbad2f7bb743c6b4a7e66667edbcefebe8e535e` |
 | Vsync on/off, A/B (section 5.15) | `e2ccb433c2714975adf6e3c2236281ea6d2d729e07b1c75ffcdb8e87eaac6c79` |
 | v0.4.2 eboot | `4d6eb9d9b79d57e648b187be592ee904b737577b14b6fb75af6f3648aaf402c3` |
+| v0.5.0 eboot | `a92eec91d207cd508433a30607b6ddad8ea7330ed89f689f27b4feb94859d3c2` |
 
 ## 15. Current decision
+
+v0.5.0 is v0.4.2 plus the game's own loading screen during the boot (its assets cost about 0.56 s), the vertex-program pool of section 8 (a safeguard: 17 KB used in 12 minutes), and the front touchscreen alongside the buttons. Frame rate is as in v0.4.2.
 
 v0.4.2 is v0.4.0 plus:
 - section 5.14: the archive replay index is written (first frame about 24 s instead of 34 s from the second launch on), and loading-screen images whose sides are not powers of two are rescaled with NEON and get their mips on the GPU;

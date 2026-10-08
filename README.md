@@ -14,15 +14,16 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.4.2). Core gameplay and the major
+**Playable work in progress (v0.5.0). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
 remaining hitches: music changes, first-time textures and images, and voice
 lines no longer freeze the game for 0.3–0.6 s. v0.4.2 brings the boot to the
 title from about 34 s to about 24 s, builds loading-screen images 2–6 times
-faster and caps the frame rate at an even 30 FPS. Performance tuning and broad
-playthrough validation remain active.**
+faster and caps the frame rate at an even 30 FPS. v0.5.0 brings back the front
+touchscreen alongside the buttons and shows the game's own loading screen while
+it boots. Performance tuning and broad playthrough validation remain active.**
 
 ### Working and validated
 
@@ -30,6 +31,8 @@ playthrough validation remain active.**
 - Main menu, character creation, gameplay, combat, dialogue, inventory, and area
   transitions work.
 - Vita buttons and analog sticks control menus and gameplay.
+- The front touchscreen works alongside them: taps on menu items, dialogue
+  choices, the HUD and targets.
 - Character and manual-save names use the Vita on-screen keyboard.
 - Local manual, quick, and automatic saves can be created, deleted, and loaded.
 - GUI layouts remain intact after saving, loading, and module transitions.
@@ -58,6 +61,7 @@ window in the tested gameplay. Each change below was A/B-tested on hardware; the
 | v0.3.0 | about 19–20 FPS (49–53 ms) | 34–37 FPS (27–30 ms) |
 | v0.4.0 | as v0.3.0; music, texture and voice-line hitches removed | as v0.3.0 |
 | v0.4.2 | as v0.4.0; boot about 24 s instead of 34 s | 30 FPS (capped; 34–37 uncapped) |
+| v0.5.0 | as v0.4.2; the game's loading screen during the boot | as v0.4.2 |
 
 What is enabled by default:
 
@@ -124,7 +128,11 @@ What is enabled by default:
     distance are not drawn: up to about 25% faster where long views open, with
     distant geometry missing.
 
-- **On main since v0.4.2 (not yet in a release):**
+- **New in v0.5.0:**
+  - **Front touchscreen:** taps on menus, dialogue choices, the HUD and
+    targets, and dragging to move, together with every button and stick. The
+    game keeps its controller layout. The rear panel stays off, and taps are
+    ignored while the on-screen keyboard is open.
   - **Loading screen at startup:** instead of a black screen until the legal
     screen, the game's own loading screen (one of its pictures, the logo, the
     progress bar and its gameplay hints) from about 5 s after launch. It stops
@@ -151,7 +159,7 @@ What is enabled by default:
 | Shader cache | Releases use the validated cache-enabled/no-`LOG_ERRORS` vitaGL recipe, which removes major first-use shader stalls and includes a uniform-overflow clamp. An older cache experiment faulted on a warm launch, so cache recovery remains documented and broader validation is ongoing. |
 | Validation | The tested routes, saves, menus, audio, and movies work, but a complete start-to-finish playthrough has not yet been certified. |
 | Text entry | Printable ASCII is supported. Emulator builds may provide a desktop fallback when the emulated common-dialog keyboard does not appear. |
-| Touch | Front and rear touch are intentionally disabled; the port uses physical controls. |
+| Touch | Only the front touchscreen is used; the rear panel is off. The game keeps its controller layout, so its touch-only on-screen controls are not shown. |
 | Platform features | No trophies, cloud saves, or online platform integration. |
 
 ## Requirements
@@ -232,7 +240,11 @@ is still black after several minutes, exit and inspect `ux0:data/kotor2/log.txt`
 - L and R: shoulder actions
 - Start: pause/menu
 
-Both touch panels are intentionally disabled.
+- Front touchscreen: tap menu items, dialogue choices, HUD buttons and targets;
+  drag to move. It works together with the buttons.
+
+The rear touch panel is off. Taps are ignored while the on-screen keyboard is
+open.
 
 Character-name and manual-save-name fields open the Vita on-screen keyboard.
 Accepted text is delivered directly to KOTOR II's existing character dispatcher;
@@ -262,6 +274,7 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Texture problems you suspect the native DXT path of | Create `ux0:data/kotor2/dxt_mode.txt` containing `0` and relaunch. DXT textures are then decoded on the CPU, as in v0.3.0. Delete the file to turn the native path back on. |
 | Image problems you suspect the GPU mipmaps of | Create `ux0:data/kotor2/mipgen_mode.txt` containing `0` and relaunch. The engine then builds every mip chain on the CPU, as in v0.3.0. Delete the file to turn it back on. |
 | Problems at startup you suspect the loading screen of | Create `ux0:data/kotor2/loadscreen_mode.txt` containing `0` and relaunch. The screen then stays black until the legal screen, as in v0.4.2. Delete the file to bring it back. |
+| Input problems you suspect the touchscreen of | Create `ux0:data/kotor2/touch_mode.txt` containing `0` and relaunch. The game then uses the buttons only, as in v0.4.2. Delete the file to bring touch back. |
 | Graphics problems you suspect the vertex-program pool of | Create `ux0:data/kotor2/patcher_mode.txt` containing `0` and relaunch. vitaGL's requests then go straight to the shader patcher and nothing is freed, as in v0.4.2; the pool stays at 4 MB. Delete the file to turn it back on. |
 | You want more than 30 FPS in light scenes | Create `ux0:data/kotor2/fps_cap.txt` containing `0` and relaunch. `LockFramerate=1` under `[Graphics Options]` in `swkotor2.ini` then caps the game again, and `V-Sync=0` turns vsync off (measured no faster). Delete the file to bring the cap back. |
 | Low frame rate in areas with long views | Create `ux0:data/kotor2/room_distance.txt` containing a distance in metres, for example `35`, and relaunch. Rooms farther than that from the camera are not drawn: distant geometry disappears (Peragus, 17 rooms beyond 35 m: 66.7 → 51.0 ms per frame). Delete the file to draw every room again. |
