@@ -225,6 +225,9 @@ target_link_libraries(KOTOR2
   -Wl,--wrap=sceGxmShaderPatcherCreateFragmentProgram
   -Wl,--wrap=sceGxmShaderPatcherForceUnregisterProgram
   -Wl,--wrap=sceGxmSetVertexProgram)
+# Vita SDL's touch backend reads the panels through sceTouchPeek; input_patch.c
+# keeps the rear panel (and the front one under the on-screen keyboard) out.
+target_link_libraries(KOTOR2 -Wl,--wrap=sceTouchPeek)
 
 option(KOTOR_AUTOTEST "Drive menus and gameplay with scripted controller input" OFF)
 set(KOTOR_AUTOTEST_PLAY_SECONDS 120 CACHE STRING "Autotest gameplay duration")

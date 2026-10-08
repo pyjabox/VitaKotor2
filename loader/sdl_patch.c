@@ -56,7 +56,7 @@ static SDL_Window *SDL_CreateWindow_hook(const char *title, int x, int y,
   if (!win)
     log_printf("[SDL] CreateWindow FAILED: %s", SDL_GetError());
   else
-    input_init();  // SDL video can enable touch; physical-controls-only mode disables it
+    input_init();  // SDL video started both touch panels: rear off again
   return win;
 }
 
@@ -245,7 +245,7 @@ static void log_event(const char *via, const SDL_Event *e) {
       g_evt[g_evt_used].type = t;
       g_evt[g_evt_used].n = 0;
       g_evt_used++;
-      log_printf("[input] %s -> FIRST event type=0x%x", via, t);
+      log_printf("[events] %s -> first event of type 0x%x", via, t);
     } else {
       i = EVT_SLOTS - 1;  // table full: fold strays into the last slot
     }

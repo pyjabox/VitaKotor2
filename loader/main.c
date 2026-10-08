@@ -4680,8 +4680,7 @@ int main(int argc, char *argv[]) {
   sceKernelChangeThreadCpuAffinityMask(0, 0x40000);
 
   sceCtrlSetSamplingModeExt(SCE_CTRL_MODE_ANALOG_WIDE);
-  sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_STOP);
-  sceTouchSetSamplingState(SCE_TOUCH_PORT_BACK, SCE_TOUCH_SAMPLING_STATE_STOP);
+  input_early_init();  // front touch on (touch_mode.txt), rear panel never
 
   gl_worker_init();   // before anything initialises vitaGL (GL_WORKER_MODE)
 
