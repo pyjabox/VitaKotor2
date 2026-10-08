@@ -130,6 +130,12 @@ What is enabled by default:
     progress bar and its gameplay hints) from about 5 s after launch. It stops
     moving when the game takes over, about 19 s in, and stays up until the
     legal screen.
+  - **Vertex-program pool:** the fix from the KOTOR I port for geometry that
+    tears into spikes in long sessions, when vitaGL's pool of patched vertex
+    programs fills up. The pool is 4 MB instead of 1 MB, and if it ever fills,
+    programs no draw has used lately are freed. Requests vitaGL repeats on
+    every draw are answered from a cache. KOTOR II uses far less of the pool
+    than KOTOR I (17 KB after 12 minutes on hardware), so this is a safeguard.
 
 ### Remaining limitations
 
@@ -256,6 +262,7 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Texture problems you suspect the native DXT path of | Create `ux0:data/kotor2/dxt_mode.txt` containing `0` and relaunch. DXT textures are then decoded on the CPU, as in v0.3.0. Delete the file to turn the native path back on. |
 | Image problems you suspect the GPU mipmaps of | Create `ux0:data/kotor2/mipgen_mode.txt` containing `0` and relaunch. The engine then builds every mip chain on the CPU, as in v0.3.0. Delete the file to turn it back on. |
 | Problems at startup you suspect the loading screen of | Create `ux0:data/kotor2/loadscreen_mode.txt` containing `0` and relaunch. The screen then stays black until the legal screen, as in v0.4.2. Delete the file to bring it back. |
+| Graphics problems you suspect the vertex-program pool of | Create `ux0:data/kotor2/patcher_mode.txt` containing `0` and relaunch. vitaGL's requests then go straight to the shader patcher and nothing is freed, as in v0.4.2; the pool stays at 4 MB. Delete the file to turn it back on. |
 | You want more than 30 FPS in light scenes | Create `ux0:data/kotor2/fps_cap.txt` containing `0` and relaunch. `LockFramerate=1` under `[Graphics Options]` in `swkotor2.ini` then caps the game again, and `V-Sync=0` turns vsync off (measured no faster). Delete the file to bring the cap back. |
 | Low frame rate in areas with long views | Create `ux0:data/kotor2/room_distance.txt` containing a distance in metres, for example `35`, and relaunch. Rooms farther than that from the camera are not drawn: distant geometry disappears (Peragus, 17 rooms beyond 35 m: 66.7 → 51.0 ms per frame). Delete the file to draw every room again. |
 

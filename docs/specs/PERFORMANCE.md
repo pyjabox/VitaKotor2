@@ -597,6 +597,7 @@ Benchmark vitaGL must contain none of `cache_diag`, `shader-cache-trace`, `UNIFO
 - `TEXTURES_SPEEDHACK=1`.
 - `GL_TEX16_CONVERT=1`: converts RGBA8 to RGBA4444 and RGB8 to RGB565, excluding render targets and cube maps. The texture working set peaked near 102.6 MB against 96 MB CDRAM.
 - Redundant texture/program bind filtering.
+- Vertex-program pool (`loader/gxm_patcher.c`), ported from the KOTOR I port (VitaKotor 32ffdb8 and 9b3ac28). vitaGL requests a patched vertex program on every draw and never releases one, so each new pair of shader and vertex layout keeps its vertex USSE memory. In KOTOR I the default 1 MB pool filled after about 20 minutes, and new layouts then drew with the wrong program (geometry spikes). The pool is now 4 MB. When a request still fails, programs no draw has bound for 30 frames are freed and the request retried. Repeat requests are answered from a cache. Fixed-function programs (the boot loading screen) are never freed, because vitaGL re-binds them from a stored pointer. On hardware, 12 minutes in one area used 18 programs and 17 KB of the pool, with no failures; the cache answered every repeat request (about 200 per frame, on the GL core). KOTOR I used 618 programs per session. A `[gxmp]` line every 60 s reports pool use and failures.
 
 ### Rejected or low value
 
