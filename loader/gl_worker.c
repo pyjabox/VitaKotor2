@@ -198,6 +198,10 @@ static void publish(void) {
   if (++s_unpub >= s_batch || (h & GLW_SYNC) || (h & GLW_OP_MASK) == COP_SWAP) flush();
 }
 
+void glw_publish(void) {
+  if (glw_ro.mode == 2) flush();
+}
+
 void glw_end(uint32_t *a) {
   if (a == s_foreign + 1) return;
   if (glw_ro.mode == 2) { publish(); return; }

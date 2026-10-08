@@ -4654,6 +4654,13 @@ static void *game_main_thread(void *arg) {
 
   ensure_writable_dirs();
 
+  /* The game's own loading screen until its first GL call; warm when the
+   * archive replay index is there (obb_index.c). */
+  {
+    SceIoStat st;
+    loadscreen_begin(sceIoGetstat(OBB_MAIN_PATH ".idx", &st) >= 0);
+  }
+
   log_printf(">>> entering SDL_main");
   int rc = SDL_main(1, game_argv);
   log_printf("<<< SDL_main returned %d", rc);

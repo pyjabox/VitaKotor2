@@ -43,10 +43,8 @@ add_executable(KOTOR2
   loader/dynlib.c
   loader/obb_index.c
   loader/loadscreen.c
-  loader/obbzip.c
-  loader/tga.c
-  loader/hints.c
-  loader/font.c
+  loader/k2res.c
+  loader/ls_text.c
   loader/jni_patch.c
   loader/audio_patch.c
   loader/audio_mp3.c
@@ -111,6 +109,9 @@ elseif(KOTOR_BINK_LEGAL_VIDEO_TEST)
 elseif(KOTOR_BINK_OPENSL_TEST)
   target_compile_definitions(KOTOR2 PRIVATE BINK_MODE=3)
 endif()
+
+# FreeType headers for the boot loading screen's text (loader/ls_text.c).
+target_include_directories(KOTOR2 PRIVATE $ENV{VITASDK}/arm-vita-eabi/include/freetype2)
 
 target_link_libraries(KOTOR2
   -Wl,--whole-archive pthread -Wl,--no-whole-archive

@@ -16,6 +16,9 @@ int gl_worker_mode(void);
  * inline limit the caller waits while fn reads data in place). */
 typedef void (*glw_fn_t)(const uint32_t *args, const void *data);
 void glw_call(glw_fn_t fn, const uint32_t *args, uint32_t nargs, const void *data, uint32_t bytes);
+/* Hand what is queued to the GL thread now rather than at the next batch of
+ * GL_WORKER_BATCH commands, a sync or a swap; does not wait. */
+void glw_publish(void);
 
 /* GL_WORKER_PROFILE (glw_prof.c): ASLgl draw hooks (after the engine is
  * loaded), the sampler (game thread), the worker's thread id, the report. */

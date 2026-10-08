@@ -1,69 +1,44 @@
-/* loadscreen.h -- progress bar covering startup.
- * Historical timings below are inherited from VitaKotor (KOTOR I), not KOTOR II
- * validation.
+/* loadscreen.h -- the game's own loading screen, shown while the game boots.
  *
- * The game draws nothing at all until its first draw call, which log124 put at
- * 69.3s -- after even the "Main Menu" analytics string at 56.1s. So the console
- * shows a black screen for over a minute and the loader is the only thing that
- * can say otherwise.
+ * KOTOR II draws nothing until its first frame, about 25 s into a boot on
+ * hardware (the legal screen), so the console otherwise sits on a black
+ * screen. From the moment vitaGL is up (about 4.6 s), the loader draws the
+ * screen the game shows between areas: one of its load_* pictures, the
+ * KOTOR II logo, LOADING in its box, the progress bar and a gameplay hint,
+ * all read from the game's own data (k2res.c) and laid out as
+ * loadscreen_p.gui does.
  *
- * An earlier version tracked only the archive mount. Once the mount got fast
- * (95s -> 2s via the replay cache) that bar filled at 10s and then sat at 100%
- * for another 59 seconds, which is worse than showing nothing: it claims to be
- * finished when it is not. This version spans begin -> first game draw.
+ * Every GL call runs on the GL thread through glw_call, in order with
+ * everything else, and leaves the default state behind: nothing the GL worker
+ * keeps a copy of changes underneath it.
  *
- * Progress is elapsed time against how long the LAST boot took, persisted to
- * DATA_PATH/startup.tim, kept separately for a warm and a cold archive
- * cache because those differ by about a minute. It is an estimate and is
- * clamped below 100% until the handoff actually happens -- a bar that stalls
- * near the end is honest; one that sits full is not.
- *
- * Drawn from whichever thread called loadscreen_begin(), never a helper thread:
- * issuing GL from a second thread caused an earlier hang in this port.
- *
- * With LOADSCREEN_ART the bar is dressed in the game's own loading-screen art:
- * a load_*.tga read straight out of the KOTOR II patch OBB (a stored ZIP entry,
- * to wait for the mount) with the bar drawn into the groove the art already
- * has. Every step of that can fail back to the plain bar.
- *
- * The art draws ONLY while the loader owns GL outright. loadscreen_tick() is
- * reached from the GLLOG macro, which sits at the top of every hooked GL
- * function -- so it runs INSIDE the game's own GL calls, between its
- * glBindBuffer and its glDrawElements. Scissor+clear survives that; a textured
- * quad does not. vitaGL's glVertexPointer stores whatever array buffer is
- * currently bound alongside the pointer it is given, so with a game VBO bound
- * our stack address becomes an offset into that VBO and the GPU fetches
- * geometry from a wrong address. On hardware that wedged GXM at 25.1s and
- * needed a hard power cycle; the screen had already gone black at ~22.5s, when
- * the game created its first framebuffer objects.
- *
- * So loadscreen_note_gl() freezes everything the moment the game issues any GL
- * of its own. The last swapped frame stays on screen -- a still loading screen,
- * which is the right picture with a stopped bar -- and from then on the tick
- * only records what the game had bound, for whoever tries to keep drawing for
- * the whole boot later. */
+ * The screen only draws while the loader owns GL outright. The first GL call
+ * of the game's own (loadscreen_note_gl, from GLLOG; about 19 s in) freezes
+ * it: the last frame stays up until the game's first frame. The bar estimates
+ * from how long that took on the previous boot (DATA_PATH/startup.tim), for
+ * a warm and a cold archive index separately, and never claims 100% before
+ * the freeze. Each piece that fails to load is left out; with no picture the
+ * screen is black with the rest on it. */
 
 #ifndef __LOADSCREEN_H__
 #define __LOADSCREEN_H__
 
-/* Take over the screen. `warm` says whether the archive replay cache was
- * available, which selects the duration estimate. */
+/* Take over the screen, on the game thread once vitaGL is up. `warm`: the
+ * archive replay index exists, which sets the duration estimate. */
 void loadscreen_begin(int warm);
 
-/* Draw a frame if due. Cheap, throttled, safe to call from any hot path; it
- * no-ops off-thread, before begin, and after end. */
+/* Draw a frame if due. Cheap, throttled, safe from any hot path; a no-op off
+ * the owning thread, before begin, after the freeze and after end. */
 void loadscreen_tick(void);
 
-/* Hand the screen to the game. Called from the first draw call. Records how
- * long this boot actually took, so the next one estimates better. */
+/* The game's first frame: record this boot's timing. Issues no GL. */
 void loadscreen_end(void);
 
-/* 1 between begin and end. Lets the GL layer avoid work while we own the screen. */
+/* 1 between begin and end. */
 int loadscreen_active(void);
 
-/* The game has issued a GL call of its own. Called from GLLOG in place of
- * loadscreen_tick(): it freezes the screen the first time, then samples the
- * game's GL bindings a bounded number of times. Never draws. */
+/* The game has issued a GL call of its own (GLLOG): the first one freezes the
+ * screen and frees everything it loaded. */
 void loadscreen_note_gl(void);
 
 #endif

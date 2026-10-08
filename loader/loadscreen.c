@@ -1,347 +1,355 @@
 /* loadscreen.c -- see loadscreen.h. */
 
-/* so_util.h reaches elf.h, which wants __BEGIN_DECLS, so the system headers
- * have to come first. */
 #include <vitasdk.h>
 #include <vitaGL.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "loadscreen.h"
-#include "gl_state_filter.h"
 #include "config.h"
 #include "log.h"
-#if LOADSCREEN_ART
-#include "font.h"
-#include "hints.h"
-#include "main.h"
-#include "obbzip.h"
-#include "so_util.h"
-#include "tga.h"
-#endif
+#include "k2res.h"
+#include "ls_text.h"
+#include "gl_worker.h"
+#include "gl_state_filter.h"
 
-#define TIM_PATH  DATA_PATH "/startup.tim"
-#define TIM_MAGIC 0x314D4954u    /* "TIM1" */
+#if LOADSCREEN_ENABLE
 
-typedef struct { unsigned magic; unsigned warm; unsigned us_warm, us_cold; } Tim;
+#define TIM_PATH    DATA_PATH "/startup.tim"
+#define TIM_MAGIC   0x324D4954u    /* "TIM2": us from begin to the freeze */
+#define FONT_PATH   DATA_PATH "/assets/iosdialog.otf"
+#define DLC_TLK     DATA_PATH "/dlc/mods_english/dialog.tlk"
+#define STR_LOADING 42493          /* LBL_LOADING's STRREF */
+#define RES_TPC     3007
+#define RES_2DA     2017
+#define MAX_ART     128
+#define MAX_HINTS   128
 
-static SceUID   g_owner  = -1;   /* only this thread may draw */
-static int      g_active = 0;
-static int      g_warm   = 0;
-static int      g_busy   = 0;    /* reentrancy: draw() runs GL, GL ticks us */
-static uint64_t g_t0     = 0;
-static uint64_t g_last   = 0;
-static uint64_t g_expect = 0;    /* us this boot is predicted to take */
-static int      g_game_gl = 0;   /* the game has started issuing GL of its own */
-static int      g_art     = 0;   /* the art loaded, so the freeze applies */
-static unsigned g_probes  = 0;
-static uint64_t g_probe_t = 0;
-#if LOADSCREEN_ART
-static GLuint   g_tex    = 0;    /* background art, 0 when we never got any */
-static GLuint   g_logo   = 0;
-static float    g_logo_s0, g_logo_t0, g_logo_s1, g_logo_t1, g_logo_aspect;
-static int      g_nhint  = 0;
-static unsigned g_seed   = 0;
+/* loadscreen_p.gui (data/gui.bif): an 800x600 panel, stretched over the
+ * screen as the game does. Extents in panel units. */
+#define GX(x) ((float)(x) * (float)SCREEN_W / 800.0f)
+#define GY(y) ((float)(y) * (float)SCREEN_H / 600.0f)
+#define LOGO_X 537
+#define LOGO_Y 9
+#define LOGO_W 200
+#define LOGO_H 200
+#define BAR_Y 472                  /* PB_PROGRESS: full width */
+#define BAR_H 20
+#define BOX_X 280                  /* LBL_LOADING, border DIMENSION 16, INNEROFFSET 9 */
+#define BOX_Y 422
+#define BOX_W 240
+#define BOX_H 26
+#define BOX_DIM 16
+#define BOX_INNER 9
+#define HINT_X 120                 /* LBL_HINT */
+#define HINT_Y 496
+#define HINT_W 560
+/* Text sizes in screen pixels, matched to the game's own screen. */
+#define LOADING_PX 18
+#define HINT_PX 20
+#define HINT_LINE 24
 
-/* Shown before the game's own hints. The boot screen is the only place the port
- * can explain itself, and the first line is the one most likely to be read. */
-static const char *const g_tip[] = {
-  "First boot after copying the game data is slower: the archive index is "
-  "being built. Later boots skip it.",
-  "The bar estimates from how long your last boot took, so it is a guess "
-  "until the game takes the screen.",
-};
-#define TIP_COUNT ((int)(sizeof g_tip / sizeof g_tip[0]))
-#endif
+/* The GUI's colours: text and bar from TEXT/PROGRESS COLOR, the box from its BORDER. */
+static const float kText[3] = {0.102f, 0.698f, 0.549f};
+static const float kBox[3] = {0.051f, 0.349f, 0.271f};
+static const float kBar = 0.698f;
 
-/* Filled rectangles via scissor+clear: no shaders, no buffers, no textures, and
- * no dependence on the projection matrix, so it draws the same whether or not
- * the art path has set one up. Coordinates are GL window space -- origin at the
- * bottom-left, unlike the GUI extents everything else is expressed in. */
-static void fill(int x, int y, int w, int h, float r, float g, float b) {
-  glEnable(GL_SCISSOR_TEST);
-  glScissor(x, y, w, h);
-  glClearColor(r, g, b, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-}
+enum { T_ART, T_LOGO, T_CORNER, T_EDGE, T_FILL, T_BAR, T_LOADING, T_HINT, T_N };
+static const char *const kNamed[T_N] = {NULL, "kotor2logo", "uibit_brdr_16bct", "uibit_brdr_16bet",
+                                        "uibit_fill_2bt", "uibit_fill_16g", NULL, NULL};
 
-/* Without art, the bar is its own screen and sits dead centre. */
-#define BAR_W 600
-#define BAR_H 12
-#define BAR_X ((SCREEN_W - BAR_W) / 2)
-#define BAR_Y ((SCREEN_H - BAR_H) / 2)
+/* GL thread only. */
+static GLuint g_tex[T_N];
+/* Game thread. */
+static int g_tw[T_N], g_th[T_N];
+static unsigned g_have;            /* bit per texture that was uploaded */
 
-static void draw_plain(float frac) {
-  gl_state_filter_forget();
-  glDisable(GL_SCISSOR_TEST);
-  glClearColor(0.05f, 0.06f, 0.09f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
+static SceUID g_owner = -1;
+static int g_active, g_warm, g_frozen, g_busy, g_off;
+static uint64_t g_t0, g_last, g_expect, g_freeze_us;
+static unsigned g_seed;
+static int g_hints[MAX_HINTS], g_nhint, g_slot = -1;
+static SceUID g_tlk_fd = -1, g_patch_fd = -1;
+static uint64_t g_tlk_base;
+static char g_art_name[20];
 
-  fill(BAR_X - 2, BAR_Y - 2, BAR_W + 4, BAR_H + 4, 0.16f, 0.17f, 0.20f);
-  fill(BAR_X, BAR_Y, BAR_W, BAR_H, 0.09f, 0.10f, 0.13f);
-  int w = (int)(BAR_W * frac);
-  if (w > 0) fill(BAR_X, BAR_Y, w, BAR_H, 0.79f, 0.64f, 0.15f);
-}
+static const char *const kColdTip =
+    "First launch after installing or copying the game data is slower: the archive index is being "
+    "built. Later launches skip it.";
 
-#if LOADSCREEN_ART
+/* ---- GL thread ------------------------------------------------------------------ */
 
-/* The art is stretched over the whole framebuffer, so bar coordinates given in
- * art pixels scale the same way the groove they sit in does. Scissor
- * coordinates start at the bottom-left, art rows at the top. */
-#define ART_SX(x) ((x) * SCREEN_W / ART_W)
-#define ART_SY(y) ((y) * SCREEN_H / ART_H)
-
-/* Sampled from the mobile game's own screen: the PB_PROGRESS fill is a flat
- * cyan. Its recessed track is painted into the background art, so only the
- * filled part gets drawn -- painting a track here would double it up. */
-#define BAR_R 0.024f
-#define BAR_G 0.671f
-#define BAR_B 0.949f
-
-/* Decode one TGA out of the archive. The caller owns the buffer. */
-static unsigned char *read_tga(ObbZip *z, const char *entry, int *w, int *h) {
-  unsigned len = 0;
-  void *raw = obbzip_read(z, entry, &len);
-  if (!raw) { log_printf("[loadscreen] %s missing from patch.obb", entry); return NULL; }
-  unsigned char *rgba = tga_decode(raw, len, w, h);
-  free(raw);
-  return rgba;
-}
-
-static GLuint upload(const unsigned char *rgba, int w, int h) {
-  GLuint t = 0;
-  glGenTextures(1, &t);
-  glBindTexture(GL_TEXTURE_2D, t);
+static void gl_upload(const uint32_t *a, const void *rgba) {
+  uint32_t slot = a[0];
+  if (g_tex[slot]) glDeleteTextures(1, &g_tex[slot]);
+  glGenTextures(1, &g_tex[slot]);
+  glBindTexture(GL_TEXTURE_2D, g_tex[slot]);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)a[1], (GLsizei)a[2], 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
   glBindTexture(GL_TEXTURE_2D, 0);
-  return t;
 }
 
-/* The logo file is 778x419 with wide transparent margins on three sides, so the
- * drawn quad uses the opaque bounding box rather than the whole image -- which
- * is also where its aspect ratio has to come from. */
-static void logo_bounds(const unsigned char *rgba, int w, int h) {
-  int x0 = w, y0 = h, x1 = -1, y1 = -1;
-  for (int y = 0; y < h; y++)
-    for (int x = 0; x < w; x++)
-      if (rgba[((size_t)y * w + x) * 4 + 3] > 8) {
-        if (x < x0) x0 = x;
-        if (x > x1) x1 = x;
-        if (y < y0) y0 = y;
-        if (y > y1) y1 = y;
-      }
-  if (x1 < x0 || y1 < y0) { x0 = y0 = 0; x1 = w - 1; y1 = h - 1; }
-  g_logo_s0 = (float)x0 / (float)w;
-  g_logo_s1 = (float)(x1 + 1) / (float)w;
-  g_logo_t0 = (float)y0 / (float)h;
-  g_logo_t1 = (float)(y1 + 1) / (float)h;
-  g_logo_aspect = (float)(x1 - x0 + 1) / (float)(y1 - y0 + 1);
+static void gl_free(const uint32_t *a, const void *data) {
+  (void)a;
+  (void)data;
+  for (int i = 0; i < T_N; i++)
+    if (g_tex[i]) { glDeleteTextures(1, &g_tex[i]); g_tex[i] = 0; }
 }
 
-/* Pull the screen's pieces out of patch.obb and upload them. Every failure path
- * leaves the piece it was loading absent -- no background means the plain bar,
- * no logo or font means the rest still draws. The boot screen is decoration and
- * must never be the thing that stops a boot. */
-static void art_load(void) {
-  uint64_t t0 = sceKernelGetProcessTimeWide();
+/* Vertex storage per quad of a frame: nothing then depends on whether vitaGL
+ * copies client arrays at draw time. */
+#define QUADS 16
+static GLfloat g_pos[QUADS][8], g_uv[QUADS][8];
+static int g_q;
 
-  ObbZip *z = obbzip_open(OBB_PATCH_PATH);
-  if (!z) {
-    log_printf("[loadscreen] cannot read %s as a zip -- plain bar", OBB_PATCH_PATH);
-    return;
-  }
-
-  int n = obbzip_match(z, "override/load_", ".tga", -1, NULL, 0);
-  if (n <= 0) {
-    log_printf("[loadscreen] no override/load_*.tga in patch.obb -- plain bar");
-    obbzip_close(z);
-    return;
-  }
-
-  /* Reading the directory for the list means no hardcoded name table to drift
-   * out of step with whatever version of the game data is installed. */
-  g_seed = (unsigned)sceKernelGetProcessTimeWide();
-  char name[128];
-  name[0] = '\0';
-  int pick = (int)(g_seed % (unsigned)n);
-  obbzip_match(z, "override/load_", ".tga", pick, name, sizeof name);
-
-  int w = 0, h = 0;
-  unsigned char *rgba = name[0] ? read_tga(z, name, &w, &h) : NULL;
-  if (!rgba) { obbzip_close(z); return; }
-  g_tex = upload(rgba, w, h);
-  free(rgba);
-  g_art = 1;
-  log_printf("[loadscreen] art %s (%dx%d, %u of %d) -> tex %u in %ums",
-             name, w, h, (unsigned)pick, n, (unsigned)g_tex,
-             (unsigned)((sceKernelGetProcessTimeWide() - t0) / 1000));
-
-  int lw = 0, lh = 0;
-  unsigned char *logo = read_tga(z, LOGO_TGA_ENTRY, &lw, &lh);
-  if (logo) {
-    logo_bounds(logo, lw, lh);
-    g_logo = upload(logo, lw, lh);
-    free(logo);
-    log_printf("[loadscreen] logo %dx%d (opaque %.0f%% x %.0f%%, aspect %d/100) -> tex %u",
-               lw, lh, (g_logo_s1 - g_logo_s0) * 100.0f, (g_logo_t1 - g_logo_t0) * 100.0f,
-               (int)(g_logo_aspect * 100.0f), (unsigned)g_logo);
-  }
-
-  font_load(z);
-  obbzip_close(z);
-
-  if (font_ready())
-    g_nhint = hints_load((LzmaUncompressFn)so_symbol(&lzma_mod, "LzmaUncompress"));
-
-  log_printf("[loadscreen] ready in %ums (art %s, logo %s, font %s, %d hints)",
-             (unsigned)((sceKernelGetProcessTimeWide() - t0) / 1000),
-             g_tex ? "yes" : "no", g_logo ? "yes" : "no",
-             font_ready() ? "yes" : "no", g_nhint);
-}
-
-/* Which line to show right now: a loader tip first, then the game's own hints.
- * The screen freezes partway through the boot, so putting the port's own
- * explanation first is the only way to be sure it is ever read. */
-static const char *current_line(unsigned elapsed_s) {
-  unsigned slot = elapsed_s / LOADSCREEN_HINT_SECONDS;
-  /* Only the first slot is ours. The screen freezes at the game's first GL
-   * call -- about three slots into a warm boot -- so spending more than one on
-   * the port would crowd out the hints entirely on exactly the boots that are
-   * short enough not to need explaining. */
-  if (slot == 0) return g_tip[g_seed % (unsigned)TIP_COUNT];
-  if (g_nhint <= 0) return NULL;
-  return hints_get((int)((g_seed + slot - 1) % (unsigned)g_nhint));
-}
-
-/* One textured quad, in screen pixels. Each caller gets its own vertex storage
- * so nothing depends on whether vitaGL copies client arrays at draw time. */
-#define QUAD(tag)                                                              \
-  static GLfloat tag##_pos[8], tag##_uv[8];
-
-static void blit(GLuint tex, GLfloat *pos, GLfloat *uv, float x, float y,
-                 float w, float h, float s0, float t0, float s1, float t1,
-                 int blend) {
-  pos[0]=x;   pos[1]=y;    pos[2]=x+w; pos[3]=y;
-  pos[4]=x+w; pos[5]=y+h;  pos[6]=x;   pos[7]=y+h;
-  uv[0]=s0; uv[1]=t0;  uv[2]=s1; uv[3]=t0;
-  uv[4]=s1; uv[5]=t1;  uv[6]=s0; uv[7]=t1;
-
-  if (blend) {
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  }
-  glEnable(GL_TEXTURE_2D);
-  glBindTexture(GL_TEXTURE_2D, tex);
-  glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-  glEnableClientState(GL_VERTEX_ARRAY);
-  glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-  glVertexPointer(2, GL_FLOAT, 0, pos);
+static void quad(int slot, float x, float y, float w, float h, float s0, float t0, float s1, float t1,
+                 const float *rgb, float a) {
+  if (!g_tex[slot] || w <= 0.0f || h <= 0.0f || g_q >= QUADS) return;
+  GLfloat *p = g_pos[g_q], *uv = g_uv[g_q];
+  g_q++;
+  p[0] = x;     p[1] = y;     p[2] = x + w; p[3] = y;
+  p[4] = x + w; p[5] = y + h; p[6] = x;     p[7] = y + h;
+  uv[0] = s0; uv[1] = t0; uv[2] = s1; uv[3] = t0;
+  uv[4] = s1; uv[5] = t1; uv[6] = s0; uv[7] = t1;
+  glBindTexture(GL_TEXTURE_2D, g_tex[slot]);
+  glColor4f(rgb ? rgb[0] : 1.0f, rgb ? rgb[1] : 1.0f, rgb ? rgb[2] : 1.0f, a);
+  glVertexPointer(2, GL_FLOAT, 0, p);
   glTexCoordPointer(2, GL_FLOAT, 0, uv);
   glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+}
+
+/* a[0]: progress x 65536; a[1], a[2]: the two text images' sizes, w << 16 | h. */
+static void gl_frame(const uint32_t *a, const void *data) {
+  (void)data;
+  float frac = (float)a[0] / 65536.0f;
+  float lw = (float)(a[1] >> 16), lh = (float)(a[1] & 0xffff), hw = (float)(a[2] >> 16), hh = (float)(a[2] & 0xffff);
+  g_q = 0;
+
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_CULL_FACE);
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glMatrixMode(GL_PROJECTION);
+  glLoadIdentity();
+  glOrtho(0, SCREEN_W, SCREEN_H, 0, -1, 1);    /* top-down, like the GUI */
+  glMatrixMode(GL_MODELVIEW);
+  glLoadIdentity();
+  glEnable(GL_TEXTURE_2D);
+  glEnableClientState(GL_VERTEX_ARRAY);
+  glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+
+  quad(T_ART, 0, 0, SCREEN_W, SCREEN_H, 0, 0, 1, 1, NULL, 1.0f);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  quad(T_LOGO, GX(LOGO_X), GY(LOGO_Y), GX(LOGO_W), GY(LOGO_H), 0, 0, 1, 1, NULL, 1.0f);
+
+  /* PB_PROGRESS: the fill texture is cut, not squeezed, as the bar grows. */
+  const float grey[3] = {kBar, kBar, kBar};
+  quad(T_BAR, 0, GY(BAR_Y), SCREEN_W * frac, GY(BAR_H), 0, 0, frac, 1, grey, 1.0f);
+
+  /* LBL_LOADING's border: fill, four mirrored corners, top and bottom edges
+   * (the box is lower than two corners, so there are no side edges). */
+  float bx = GX(BOX_X), by = GY(BOX_Y), bw = GX(BOX_W), bh = GY(BOX_H);
+  float cw = GX(BOX_DIM), ch = GY(BOX_DIM);
+  if (ch > bh * 0.5f) ch = bh * 0.5f;
+  quad(T_FILL, bx + GX(BOX_INNER), by + GY(BOX_INNER), bw - 2 * GX(BOX_INNER), bh - 2 * GY(BOX_INNER), 0, 0, 1, 1,
+       kBox, 1.0f);
+  quad(T_CORNER, bx, by, cw, ch, 0, 0, 1, 1, kBox, 1.0f);
+  quad(T_CORNER, bx + bw - cw, by, cw, ch, 1, 0, 0, 1, kBox, 1.0f);
+  quad(T_CORNER, bx, by + bh - ch, cw, ch, 0, 1, 1, 0, kBox, 1.0f);
+  quad(T_CORNER, bx + bw - cw, by + bh - ch, cw, ch, 1, 1, 0, 0, kBox, 1.0f);
+  quad(T_EDGE, bx + cw, by, bw - 2 * cw, ch, 0, 0, 1, 1, kBox, 1.0f);
+  quad(T_EDGE, bx + cw, by + bh - ch, bw - 2 * cw, ch, 0, 1, 1, 0, kBox, 1.0f);
+  quad(T_LOADING, bx + (bw - lw) * 0.5f, by + (bh - lh) * 0.5f, lw, lh, 0, 0, 1, 1, kText, 1.0f);
+  quad(T_HINT, GX(HINT_X) + (GX(HINT_W) - hw) * 0.5f, GY(HINT_Y) + 6.0f, hw, hh, 0, 0, 1, 1, kText, 1.0f);
+
+  /* Back to the defaults the GL worker's copy of the state assumes. */
+  glDisable(GL_BLEND);
+  glBlendFunc(GL_ONE, GL_ZERO);
   glDisableClientState(GL_TEXTURE_COORD_ARRAY);
   glDisableClientState(GL_VERTEX_ARRAY);
   glBindTexture(GL_TEXTURE_2D, 0);
   glDisable(GL_TEXTURE_2D);
-  if (blend) glDisable(GL_BLEND);
-}
-
-/* Leaves no state behind. loadscreen_end() is called from inside the game's
- * FIRST glDrawArrays -- after it has bound its program, textures and arrays --
- * so teardown cannot happen there without clobbering that draw. Cleaning up
- * per frame instead means the handover only has to delete textures. */
-static void art_draw(float frac) {
-  unsigned elapsed_s =
-      (unsigned)((sceKernelGetProcessTimeWide() - g_t0) / 1000000);
-  QUAD(bg)
-  QUAD(logo)
-
-  glDisable(GL_SCISSOR_TEST);
-  glDisable(GL_DEPTH_TEST);
-  glDisable(GL_BLEND);
-  glDisable(GL_CULL_FACE);
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-
-  /* Top-down ortho so vertex coordinates read the same way round as the art's
-   * own rows, and so uv 0,0 lands on the first row tga_decode produced. */
-  glMatrixMode(GL_PROJECTION);
-  glLoadIdentity();
-  glOrtho(0, SCREEN_W, SCREEN_H, 0, -1, 1);
-  glMatrixMode(GL_MODELVIEW);
-  glLoadIdentity();
-
-  blit(g_tex, bg_pos, bg_uv, 0.0f, 0.0f, SCREEN_W, SCREEN_H,
-       0.0f, 0.0f, 1.0f, 1.0f, 0);
-
-  if (g_logo) {
-    float lw = (float)ART_SX(ART_LOGO_W);
-    float lh = lw / g_logo_aspect;
-    blit(g_logo, logo_pos, logo_uv, (SCREEN_W - lw) * 0.5f,
-         (float)ART_SY(ART_LOGO_BOTTOM) - lh, lw, lh,
-         g_logo_s0, g_logo_t0, g_logo_s1, g_logo_t1, 1);
-  }
-
-  if (font_ready()) {
-    float lx = (float)ART_SX(ART_LOAD_CX) - font_measure("LOADING", -1) * 0.5f;
-    font_draw("LOADING", -1, lx, (float)ART_SY(ART_LOAD_Y), 1.0f,
-              0.588f, 0.667f, 0.784f, 1.0f);
-
-    const char *line = current_line(elapsed_s);
-    if (line)
-      font_draw_wrapped(line, (float)ART_SX(ART_HINT_CX), (float)ART_SY(ART_HINT_Y),
-                        (float)ART_SX(ART_HINT_W), 1.0f,
-                        0.431f, 0.627f, 0.922f, 1.0f);
-  }
-
-  /* Put the projection back to identity rather than leaving our ortho behind.
-   * The game is shader-based and reads none of this, but a stale matrix is the
-   * sort of thing that only shows up two bugs later. Modelview is untouched
-   * since we loaded identity into it above. */
+  glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
   glMatrixMode(GL_MODELVIEW);
-
-  int bx = ART_SX(ART_BAR_X);
-  int bw = ART_SX(ART_BAR_W);
-  int bh = ART_SY(ART_BAR_H);
-  int by = SCREEN_H - ART_SY(ART_BAR_Y) - bh;   /* art top-down -> GL bottom-up */
-  int w = (int)(bw * frac);
-  if (w > 0) fill(bx, by, w, bh, BAR_R, BAR_G, BAR_B);
-  glDisable(GL_SCISSOR_TEST);
-}
-#endif  /* LOADSCREEN_ART */
-
-static void draw(float frac) {
-  gl_state_filter_forget();   /* vitaGL state changed behind gles2-bc */
-  if (frac < 0.0f) frac = 0.0f;
-  if (frac > 1.0f) frac = 1.0f;
-
-#if LOADSCREEN_ART
-  if (g_tex) art_draw(frac);
-  else
-#endif
-    draw_plain(frac);
-
-  glDisable(GL_SCISSOR_TEST);
   vglSwapBuffers(GL_FALSE);
 }
 
-/* ---- persisted duration estimate ------------------------------------------ */
+/* ---- game thread ------------------------------------------------------------------ */
+
+static void upload(int slot, uint8_t *rgba, int w, int h) {
+  if (!rgba) return;
+  uint32_t a[3] = {(uint32_t)slot, (uint32_t)w, (uint32_t)h};
+  glw_call(gl_upload, a, 3, rgba, (uint32_t)(w * h * 4));
+  free(rgba);
+  g_tw[slot] = w;
+  g_th[slot] = h;
+  g_have |= 1u << slot;
+}
+
+typedef struct { const char *name; uint64_t off, size; } Member;
+static int member_cb(const char *n, unsigned len, uint64_t off, uint64_t size, void *ctx) {
+  int left = 0;
+  for (Member *m = ctx; m->name; m++) {
+    if (!m->size && strlen(m->name) == len && !memcmp(n, m->name, len)) { m->off = off; m->size = size; }
+    left += !m->size;
+  }
+  return left == 0;
+}
+
+typedef struct {
+  struct { uint64_t off; uint32_t size; char name[17]; } art[MAX_ART];
+  int nart;
+  uint64_t off[T_N];
+  uint32_t size[T_N];
+} ErfPick;
+static int erf_cb(const char *rr, unsigned type, uint64_t off, uint32_t size, void *ctx) {
+  ErfPick *e = ctx;
+  if (type != RES_TPC) return 0;
+  if (!strncmp(rr, "load_", 5) && e->nart < MAX_ART) {
+    e->art[e->nart].off = off;
+    e->art[e->nart].size = size;
+    snprintf(e->art[e->nart].name, sizeof e->art[0].name, "%s", rr);
+    e->nart++;
+  }
+  for (int i = 0; i < T_N; i++)
+    if (kNamed[i] && !strcmp(rr, kNamed[i])) { e->off[i] = off; e->size[i] = size; }
+  return 0;
+}
+
+static void load_tpc(SceUID fd, uint64_t off, uint32_t size, int slot) {
+  uint8_t *t = size ? k2_read(fd, off, size) : NULL;
+  int w = 0, h = 0;
+  uint8_t *rgba = t ? k2tpc_rgba(t, size, &w, &h) : NULL;
+  free(t);
+  upload(slot, rgba, w, h);
+}
+
+static void text_upload(int slot, const char *s, int px, int max_w, int line_h) {
+  int w = 0, h = 0;
+  uint8_t *img = s && *s ? ls_text_image(s, px, max_w, line_h, &w, &h) : NULL;
+  if (img) upload(slot, img, w, h);
+  else g_have &= ~(1u << slot), g_tw[slot] = g_th[slot] = 0;
+}
+
+static unsigned ms_since(uint64_t *t) {
+  uint64_t now = sceKernelGetProcessTimeWide();
+  unsigned ms = (unsigned)((now - *t) / 1000);
+  *t = now;
+  return ms;
+}
+
+static void assets_load(void) {
+  uint64_t t0 = sceKernelGetProcessTimeWide(), ts = t0;
+  unsigned ms_obb, ms_erf, ms_art, ms_gui, ms_hints, ms_font;
+  g_patch_fd = sceIoOpen(OBB_PATCH_PATH, SCE_O_RDONLY, 0);
+  Member pm[] = {{"texturepacks/swpc_tex_gui.erf", 0, 0}, {"localized/english/dialog.tlk", 0, 0}, {NULL, 0, 0}};
+  if (g_patch_fd >= 0) k2obb_scan(g_patch_fd, member_cb, pm);
+  ms_obb = ms_since(&ts);
+
+  static ErfPick e;
+  memset(&e, 0, sizeof e);
+  if (pm[0].size) k2erf_scan(g_patch_fd, pm[0].off, erf_cb, &e);
+  ms_erf = ms_since(&ts);
+  g_seed = (unsigned)sceKernelGetProcessTimeWide();
+  if (e.nart) {
+    int pick = (int)(g_seed % (unsigned)e.nart);
+    snprintf(g_art_name, sizeof g_art_name, "%s", e.art[pick].name);
+    load_tpc(g_patch_fd, e.art[pick].off, e.art[pick].size, T_ART);
+  }
+  ms_art = ms_since(&ts);
+  for (int i = 0; i < T_N; i++)
+    if (kNamed[i]) load_tpc(g_patch_fd, e.off[i], e.size[i], i);
+  ms_gui = ms_since(&ts);
+
+  /* The talk table the game itself uses: the DLC's if present. */
+  g_tlk_fd = sceIoOpen(DLC_TLK, SCE_O_RDONLY, 0);
+  g_tlk_base = 0;
+  if (g_tlk_fd < 0 && pm[1].size) { g_tlk_fd = g_patch_fd; g_tlk_base = pm[1].off; }
+
+  /* loadscreenhints.2da through chitin.key and data/2da.bif in the main OBB. */
+  SceUID mfd = sceIoOpen(OBB_MAIN_PATH, SCE_O_RDONLY, 0);
+  Member mm[] = {{"chitin.key", 0, 0}, {"data/2da.bif", 0, 0}, {NULL, 0, 0}};
+  if (mfd >= 0) k2obb_scan(mfd, member_cb, mm);
+  uint8_t *key = mm[0].size ? k2_read(mfd, mm[0].off, (uint32_t)mm[0].size) : NULL;
+  char bif[64];
+  uint32_t idx = 0, len = 0;
+  if (key && mm[1].size && k2key_find(key, (uint32_t)mm[0].size, "loadscreenhints", RES_2DA, bif, sizeof bif, &idx) &&
+      !strcmp(bif, "data/2da.bif")) {
+    uint8_t *d = k2bif_read(mfd, mm[1].off, idx, &len);
+    if (d) g_nhint = k2_2da_ints(d, len, "gameplayhint", g_hints, MAX_HINTS);
+    free(d);
+  }
+  free(key);
+  if (mfd >= 0) sceIoClose(mfd);
+  ms_hints = ms_since(&ts);
+
+  int font = ls_text_open(FONT_PATH);
+  if (font) {
+    char s[256];
+    if (g_tlk_fd < 0 || !k2tlk_get(g_tlk_fd, g_tlk_base, STR_LOADING, s, sizeof s)) snprintf(s, sizeof s, "Loading");
+    for (char *c = s; *c; c++)
+      if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
+    text_upload(T_LOADING, s, LOADING_PX, (int)GX(BOX_W), LOADING_PX);
+  }
+  ms_font = ms_since(&ts);
+  log_printf("[loadscreen] ready in %u ms (archive table %u, texture pack %u, picture %u, logo and box %u, hints %u, "
+             "font %u): art %s (%d), logo %s, box %s, font %s, %d hints, talk table %s",
+             (unsigned)((sceKernelGetProcessTimeWide() - t0) / 1000), ms_obb, ms_erf, ms_art, ms_gui, ms_hints, ms_font,
+             g_art_name[0] ? g_art_name : "none", e.nart, g_have & (1u << T_LOGO) ? "yes" : "no",
+             g_have & (1u << T_CORNER) ? "yes" : "no", font ? "yes" : "no", g_nhint,
+             g_tlk_fd < 0 ? "none" : g_tlk_base ? "patch OBB" : "DLC");
+}
+
+/* The hint for this moment: on a cold boot the port's one explanation first,
+ * then the game's gameplay hints. */
+static void hint_update(unsigned elapsed_s) {
+  int slot = (int)(elapsed_s / LOADSCREEN_HINT_SECONDS);
+  if (slot == g_slot) return;
+  g_slot = slot;
+  int own = g_warm ? 0 : 1;
+  char s[1024];
+  s[0] = 0;
+  if (slot < own) snprintf(s, sizeof s, "%s", kColdTip);
+  else if (g_nhint > 0 && g_tlk_fd >= 0)
+    k2tlk_get(g_tlk_fd, g_tlk_base, g_hints[(g_seed + (unsigned)(slot - own)) % (unsigned)g_nhint], s, sizeof s);
+  text_upload(T_HINT, s, HINT_PX, (int)GX(HINT_W), HINT_LINE);
+}
+
+static void draw(float frac) {
+  if (frac < 0.0f) frac = 0.0f;
+  if (frac > 1.0f) frac = 1.0f;
+  hint_update((unsigned)((sceKernelGetProcessTimeWide() - g_t0) / 1000000));
+  uint32_t a[3] = {(uint32_t)(frac * 65536.0f), (uint32_t)g_tw[T_LOADING] << 16 | (uint32_t)g_th[T_LOADING],
+                   (uint32_t)g_tw[T_HINT] << 16 | (uint32_t)g_th[T_HINT]};
+  glw_call(gl_frame, a, 3, NULL, 0);
+  /* One command per frame: without this it waits for a batch to fill, which
+   * held the screen back for seconds on hardware. */
+  glw_publish();
+  gl_state_filter_forget();
+}
+
+/* ---- timing ---------------------------------------------------------------------- */
+
+typedef struct { unsigned magic, us_warm, us_cold; } Tim;
 
 static void tim_read(Tim *t) {
-  t->magic = TIM_MAGIC; t->warm = 0;
+  t->magic = TIM_MAGIC;
   t->us_warm = LOADSCREEN_DEFAULT_WARM_S * 1000000u;
   t->us_cold = LOADSCREEN_DEFAULT_COLD_S * 1000000u;
   SceUID fd = sceIoOpen(TIM_PATH, SCE_O_RDONLY, 0);
   if (fd < 0) return;
   Tim d;
   if (sceIoRead(fd, &d, sizeof d) == (int)sizeof d && d.magic == TIM_MAGIC) {
-    if (d.us_warm > 1000000u && d.us_warm < 600000000u) t->us_warm = d.us_warm;
-    if (d.us_cold > 1000000u && d.us_cold < 600000000u) t->us_cold = d.us_cold;
+    if (d.us_warm > 1000000u && d.us_warm < 300000000u) t->us_warm = d.us_warm;
+    if (d.us_cold > 1000000u && d.us_cold < 300000000u) t->us_cold = d.us_cold;
   }
   sceIoClose(fd);
 }
@@ -350,158 +358,97 @@ static void tim_write(unsigned us) {
   Tim t;
   tim_read(&t);
   if (g_warm) t.us_warm = us; else t.us_cold = us;
-  t.magic = TIM_MAGIC;
   SceUID fd = sceIoOpen(TIM_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
   if (fd < 0) return;
   sceIoWrite(fd, &t, sizeof t);
   sceIoClose(fd);
 }
 
-/* ---- public ---------------------------------------------------------------- */
+static int switched_off(void) {
+  SceUID fd = sceIoOpen(DATA_PATH "/loadscreen_mode.txt", SCE_O_RDONLY, 0);
+  char c = 0;
+  if (fd < 0) return 0;
+  int off = sceIoRead(fd, &c, 1) == 1 && c == '0';
+  sceIoClose(fd);
+  return off;
+}
+
+/* ---- public ---------------------------------------------------------------------- */
 
 void loadscreen_begin(int warm) {
-#if LOADSCREEN_ENABLE
-  Tim t; tim_read(&t);
-  g_warm   = warm ? 1 : 0;
+  if (switched_off()) {
+    g_off = 1;
+    log_printf("[loadscreen] off (loadscreen_mode.txt)");
+    return;
+  }
+  Tim t;
+  tim_read(&t);
+  g_warm = warm ? 1 : 0;
   g_expect = warm ? t.us_warm : t.us_cold;
-  g_owner  = sceKernelGetThreadId();
-  g_t0     = sceKernelGetProcessTimeWide();
-  g_last   = 0;
+  g_owner = sceKernelGetThreadId();
+  g_t0 = sceKernelGetProcessTimeWide();
   g_active = 1;
-  log_printf("[loadscreen] on (thread 0x%x, %s cache, expecting %us)",
-             (unsigned)g_owner, warm ? "warm" : "cold", (unsigned)(g_expect / 1000000));
-  /* Held across art_load() too: g_tex goes non-zero at glGenTextures, a moment
-   * before glTexImage2D gives it any content, and a tick landing in that gap
-   * would draw an undefined texture. */
   g_busy = 1;
-#if LOADSCREEN_ART
-  art_load();
-#endif
+  log_printf("[loadscreen] on (%s archive index, expecting %u s to the game's first GL)", warm ? "warm" : "cold",
+             (unsigned)(g_expect / 1000000));
+  assets_load();
   draw(0.0f);
+  g_last = sceKernelGetProcessTimeWide();
   g_busy = 0;
-#else
-  (void)warm;
+#if LOADSCREEN_TEST_HOLD_S
+  while (sceKernelGetProcessTimeWide() - g_t0 < LOADSCREEN_TEST_HOLD_S * 1000000ull) {
+    sceKernelDelayThread(50 * 1000);
+    loadscreen_tick();
+  }
 #endif
 }
 
 int loadscreen_active(void) { return g_active; }
 
-/* Record what the game has bound. Every call here is a pure query, and we are
- * in the loader's own wrapper before the real GL call runs, so vitaGL is not
- * re-entered. The values start at -1 so an enum vitaGL declines to answer reads
- * as unknown rather than as a plausible zero. */
-static void probe_gl_state(const char *when) {
-  GLint fbo = -1, prog = -1, vbo = -1, ibo = -1, tex = -1;
-  GLint vp[4] = { -1, -1, -1, -1 };
-  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
-  glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
-  glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &vbo);
-  glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &ibo);
-  glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
-  glGetIntegerv(GL_VIEWPORT, vp);
-  log_printf("[loadscreen:probe %u/%u] %s: fbo=%d prog=%d vbo=%d ibo=%d tex=%d "
-             "viewport=%d,%d %dx%d", g_probes + 1, (unsigned)LOADSCREEN_PROBE_MAX,
-             when, fbo, prog, vbo, ibo, tex, vp[0], vp[1], vp[2], vp[3]);
-  g_probes++;
-}
-
-void loadscreen_note_gl(void) {
-#if LOADSCREEN_ENABLE
-  if (!g_active) return;
-
-  /* Raise the flag before the thread check, and before anything below can
-   * return early: a plain int write is safe from any thread, and GL issued by
-   * some other thread is just as good a reason to stop the art. Everything
-   * after this only makes sense on the thread that owns the screen. */
-  int first = !g_game_gl;
-  g_game_gl = 1;
-
-  if (sceKernelGetThreadId() != g_owner) return;
-
-  if (first) {
-    uint64_t now = sceKernelGetProcessTimeWide();
-    unsigned ms = (unsigned)((now - g_t0) / 1000);
-    if (g_art)
-      log_printf("[loadscreen] frozen at %u.%03us -- the game has begun issuing "
-                 "GL, so the art stops here and the last frame stays on screen",
-                 ms / 1000, ms % 1000);
-    else
-      log_printf("[loadscreen] game began issuing GL at %u.%03us (plain bar, "
-                 "keeps drawing)", ms / 1000, ms % 1000);
-    g_probe_t = now;
-    probe_gl_state("at the game's first GL call");
-#if LOADSCREEN_ART
-    /* Nothing will ever draw it again. vitaGL defers the actual free until the
-     * texture is no longer referenced, so this cannot pull memory out from
-     * under a frame still in flight. Doing it here rather than at handover also
-     * leaves loadscreen_end() with no GL to issue at all, which matters because
-     * it runs inside the game's first draw call. */
-    if (g_tex)  { glDeleteTextures(1, &g_tex);  g_tex = 0; }
-    if (g_logo) { glDeleteTextures(1, &g_logo); g_logo = 0; }
-    font_free();
-    hints_free();
-    g_nhint = 0;
-#endif
-  } else if (g_probes < LOADSCREEN_PROBE_MAX) {
-    uint64_t now = sceKernelGetProcessTimeWide();
-    if (now - g_probe_t >= (uint64_t)LOADSCREEN_PROBE_MS * 1000) {
-      g_probe_t = now;
-      probe_gl_state("while frozen");
-    }
-  }
-
-  /* GLLOG used to call this directly. The plain bar still wants it; the art
-   * path stops itself inside the tick. */
-  loadscreen_tick();
-#endif
-}
-
 void loadscreen_tick(void) {
-#if LOADSCREEN_ENABLE
-  if (!g_active || g_busy) return;
-  if (g_art && g_game_gl) return;   /* frozen: see loadscreen.h */
-  if (sceKernelGetThreadId() != g_owner) return;    /* never GL off-thread */
-
+  if (!g_active || g_busy || g_frozen) return;
+  if (sceKernelGetThreadId() != g_owner) return;
   uint64_t now = sceKernelGetProcessTimeWide();
   if (now - g_last < LOADSCREEN_REDRAW_MS * 1000) return;
   g_last = now;
-
-  /* Clamp below full: the estimate is from the previous boot and this one may
-   * be slower. A bar that creeps to 99% and waits is honest; one that reads
-   * 100% while the game is still loading is exactly the bug being fixed. */
+  /* Below full until the game takes the screen: the estimate is from the
+   * previous boot, and this one may be slower. */
   float f = g_expect ? (float)(now - g_t0) / (float)g_expect : 0.0f;
   if (f > 0.99f) f = 0.99f;
+  g_busy = 1;
+  draw(f);
+  g_busy = 0;
+}
 
-  g_busy = 1; draw(f); g_busy = 0;
-#endif
+void loadscreen_note_gl(void) {
+  if (!g_active || g_frozen) return;
+  g_frozen = 1;
+  if (sceKernelGetThreadId() != g_owner) return;
+  g_freeze_us = sceKernelGetProcessTimeWide() - g_t0;
+  /* After the last frame in the queue, so it frees nothing still in use;
+   * vitaGL also defers the actual free until the GPU is done with it. */
+  glw_call(gl_free, NULL, 0, NULL, 0);
+  ls_text_close();
+  if (g_tlk_fd >= 0 && g_tlk_fd != g_patch_fd) sceIoClose(g_tlk_fd);
+  if (g_patch_fd >= 0) sceIoClose(g_patch_fd);
+  g_tlk_fd = g_patch_fd = -1;
+  log_printf("[loadscreen] frozen at %u.%u s after start: the game issues GL from here", (unsigned)(g_freeze_us / 1000000),
+             (unsigned)(g_freeze_us / 100000 % 10));
 }
 
 void loadscreen_end(void) {
-#if LOADSCREEN_ENABLE
   if (!g_active) return;
   g_active = 0;
-  if (sceKernelGetThreadId() != g_owner) return;
-
   unsigned took = (unsigned)(sceKernelGetProcessTimeWide() - g_t0);
-
-  /* This runs INSIDE the game's first glDrawArrays, after it has bound its own
-   * program, buffers and texture. The art path issues no GL here at all: it
-   * stopped drawing at the freeze and its texture went with it, so there is
-   * nothing left to do but record the timing. Only the plain bar, which has
-   * always drawn this final frame safely, still does. */
-  if (!(g_art && g_game_gl)) {
-    g_busy = 1;
-    draw(1.0f);
-    glDisable(GL_SCISSOR_TEST);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    g_busy = 0;
-  }
-
-  tim_write(took);
-  log_printf("[loadscreen] off after %u.%us (%s cache, %s) -- estimate saved for "
-             "next boot", took / 1000000, (took / 100000) % 10,
-             g_warm ? "warm" : "cold",
-             g_art ? (g_game_gl ? "art, frozen early" : "art") : "plain bar");
-#endif
+  if (g_freeze_us) tim_write((unsigned)g_freeze_us);
+  log_printf("[loadscreen] the game's first frame %u.%u s after start (%s index); estimate saved", took / 1000000,
+             took / 100000 % 10, g_warm ? "warm" : "cold");
 }
+
+#else
+void loadscreen_begin(int warm) { (void)warm; }
+void loadscreen_tick(void) {}
+void loadscreen_end(void) {}
+int loadscreen_active(void) { return 0; }
+void loadscreen_note_gl(void) {}
+#endif

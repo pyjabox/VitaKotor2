@@ -26,6 +26,7 @@
 
 #include "config.h"
 #include "main.h"
+#include "loadscreen.h"
 #include "fs_patch.h"
 #include "so_util.h"
 #include "log.h"
@@ -289,6 +290,7 @@ _Static_assert(__builtin_offsetof(struct bionic_stat, st_mtime_sec) == 80,
  * by its return address (no wrapper in between). */
 static int fs_stat(const char *path, void *out) {
   char t[512];
+  loadscreen_tick();      /* the boot's folder scans stat for seconds without a read */
   fs_translate_ex(path, t, sizeof(t), 0);
   if (fs_known_missing(t)) return -1;
 

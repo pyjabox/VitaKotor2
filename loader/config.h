@@ -140,78 +140,24 @@
 // every archive read is preceded by a seek to the virtual handle's position.
 #define OBB_USE_PREAD        1
 
-// Progress bar for startup. The game draws NOTHING until its first draw call --
-// log124 measured that at 69.3s, later even than the "Main Menu" analytics
-// string at 56.1s -- so without this the console looks hung for over a minute.
-// The bar spans loader start to that first draw, estimating from how long the
-// previous boot took (saved under DATA_PATH). Warm and cold
-// archive-cache timings are tracked separately; they differ by about a minute.
-#define LOADSCREEN_ENABLE         0
+// Boot loading screen (loader/loadscreen.c): the game's own loading screen --
+// one of its load_* pictures, the logo, LOADING, a progress bar and a gameplay
+// hint -- composed from KOTOR II's data the way loadscreen_p.gui lays it out.
+// It covers vitaGL's start (about 4.6 s after launch on hardware) to the
+// game's first GL call (about 19 s); without it the screen stays black until
+// the legal screen, about 25 s in. It costs the boot about 0.56 s, the time
+// its assets take to load. ux0:data/kotor2/loadscreen_mode.txt containing 0
+// turns it off.
+#define LOADSCREEN_ENABLE         1
 #define LOADSCREEN_REDRAW_MS      100
-#define LOADSCREEN_DEFAULT_WARM_S 70    // first-ever run with a built .idx cache
-#define LOADSCREEN_DEFAULT_COLD_S 135   // first-ever run, building the cache
-
-// Dress the boot screen in the game's own loading-screen art instead of a bare
-// bar. The background comes from a load_*.tga inside the KOTOR II patch OBB,
-// plain STORED zip entry and so readable before mount_obbs() runs. Set to 0 to
-// go back to the untextured bar: the art path touches GL state (a texture, the
-// fixed-function matrices) that the scissor-and-clear bar never did, so it is
-// the first thing to rule out if a boot regresses.
-#define LOADSCREEN_ART            1
-
-// Bar geometry in the ART's own pixels, not loadscreen.gui's.
-//
-// The first attempt used PB_PROGRESS's extent from loadscreen.gui (LEFT 380,
-// WIDTH 262 in its 1024x768 space) and sat visibly too wide. The groove the bar
-// belongs in is painted into the load_*.tga itself, and measuring the two
-// bright edge posts across all 97 of them puts it at x 437..586 -- 149 wide,
-// not 262. Same centre, which is why it looked close but overhung by about 30
-// pixels each side. Since we stretch the art over the whole framebuffer, the
-// bar has to be anchored to the art, or the two cannot stay registered.
-//
-// Vertically the two sources agree, so this keeps loadscreen.gui's TOP 446 and
-// HEIGHT 35 converted into art rows (x512/768).
-#define ART_W                     1024
-#define ART_H                     512
-#define ART_BAR_X                 437
-#define ART_BAR_W                 149
-#define ART_BAR_Y                 297
-#define ART_BAR_H                 23
-
-// The rest of the screen, also in art pixels. loadscreen.gui's extents were the
-// starting point but its horizontal figures do not survive the stretch (see the
-// bar above), so these were set by composing the real assets against a capture
-// of the game's own screen until they matched.
-//
-// The logo is width-anchored and sits on ART_LOGO_BOTTOM, which is just clear of
-// the picture inset the art starts at row 164. Its file carries wide
-// transparent margins, so the drawn quad uses the opaque bounding box.
-#define ART_LOGO_W                300
-#define ART_LOGO_BOTTOM           156
-#define ART_LOAD_CX               517   // "LOADING", centred (LBL_LOADING)
-#define ART_LOAD_Y                326
-#define ART_HINT_CX               513   // the rotating line (LBL_HINT)
-#define ART_HINT_Y                352
-#define ART_HINT_W                590   // narrower than LBL_HINT's 748: matches
-                                        // where the game's own screen wraps
-
-// Seconds each line stays up. The screen freezes when the game takes over, at
-// about 18s of a warm boot, so this is what decides how many are ever seen.
+#define LOADSCREEN_DEFAULT_WARM_S 14    // until a boot has been timed: archive index present
+#define LOADSCREEN_DEFAULT_COLD_S 24    // ... index being built
 #define LOADSCREEN_HINT_SECONDS   6
-
-// Assets read at boot. The .txi ships in the VPK for the game's own use; the
-// atlas and the logo come out of the KOTOR II patch OBB.
-#define FONT_TXI_PATH             "app0:fonts/dialogfont16x16b.txi"
-#define FONT_TGA_ENTRY            "override/dialogfont16x16b.tga"
-#define LOGO_TGA_ENTRY            "override/and_main_logo.tga"
-
-// How many times to dump the game's GL state after it takes over. The art can
-// only draw while the loader owns GL outright; once the game starts issuing GL
-// the loadscreen stops for good (see loadscreen.h). These probes record what
-// was bound at that point, so a future attempt to keep drawing for the whole
-// boot starts from measurements rather than guesses.
-#define LOADSCREEN_PROBE_MAX      24
-#define LOADSCREEN_PROBE_MS       2000
+// Test builds: keep drawing for this many seconds before the game starts, so
+// the screen can be looked at in Vita3K, where the game takes it within 2 s.
+#ifndef LOADSCREEN_TEST_HOLD_S
+#define LOADSCREEN_TEST_HOLD_S    0
+#endif
 
 // Per-call GL trace budget. Every traced call is one sceIoWrite to the memory
 // card, and log125/126 measured what that costs: gaps after a log line sit at a
