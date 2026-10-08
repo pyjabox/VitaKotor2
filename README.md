@@ -124,11 +124,18 @@ What is enabled by default:
     distance are not drawn: up to about 25% faster where long views open, with
     distant geometry missing.
 
+- **On main since v0.4.2 (not yet in a release):**
+  - **Loading screen at startup:** instead of a black screen until the legal
+    screen, the game's own loading screen (one of its pictures, the logo, the
+    progress bar and its gameplay hints) from about 5 s after launch. It stops
+    moving when the game takes over, about 19 s in, and stays up until the
+    legal screen.
+
 ### Remaining limitations
 
 | Area | Current behavior |
 |---|---|
-| Startup | A cold launch can remain black for roughly two minutes while archives are scanned and shaders compile. Wait before assuming the process has hung. Later launches reach the title in about 24 s; about one launch in three takes about 11 s longer, in the engine's scan of `dlc/` (cause not yet known). |
+| Startup | The screen is black for about 5 s, then shows the loading screen; it stops moving when the game takes over (about 19 s in) and stays up until the legal screen. A cold launch can take roughly two minutes while archives are scanned and shaders compile, and the loading screen can sit still for much of it. Wait before assuming the process has hung. Later launches reach the title in about 24 s; about one launch in three takes about 11 s longer, in the engine's scan of `dlc/` (cause not yet known). |
 | Performance | Heavy scenes remain CPU-bound, mostly in the engine's per-object rendering work: about 19–20 FPS in the busiest tested scenes. A 10 m distance filter can reduce draws further but remains too experimental for releases. See the [performance reference](docs/specs/PERFORMANCE.md). |
 | Visual changes | There are no dynamic shadows: the loader sets the game's own `Shadows=0` (and `Soft Shadows=0`) in `swkotor2.ini` at every launch. The in-game option still works until the next launch. The mobile bloom passes are skipped (no game option controls them). Rooms keep their baked lighting. |
 | AI updates | The server AI gets 3 ms per frame instead of 10 ms, so each object is updated less often (creatures about every third frame in busy areas). Nothing was noticed in testing, but reactions in very crowded scenes may lag slightly. |
@@ -248,6 +255,7 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Rendering problems you suspect the GL worker of | Create `ux0:data/kotor2/glw_mode.txt` containing `0` and relaunch. vitaGL then runs on the game thread, as in v0.2.0. Delete the file to turn the worker back on. |
 | Texture problems you suspect the native DXT path of | Create `ux0:data/kotor2/dxt_mode.txt` containing `0` and relaunch. DXT textures are then decoded on the CPU, as in v0.3.0. Delete the file to turn the native path back on. |
 | Image problems you suspect the GPU mipmaps of | Create `ux0:data/kotor2/mipgen_mode.txt` containing `0` and relaunch. The engine then builds every mip chain on the CPU, as in v0.3.0. Delete the file to turn it back on. |
+| Problems at startup you suspect the loading screen of | Create `ux0:data/kotor2/loadscreen_mode.txt` containing `0` and relaunch. The screen then stays black until the legal screen, as in v0.4.2. Delete the file to bring it back. |
 | You want more than 30 FPS in light scenes | Create `ux0:data/kotor2/fps_cap.txt` containing `0` and relaunch. `LockFramerate=1` under `[Graphics Options]` in `swkotor2.ini` then caps the game again, and `V-Sync=0` turns vsync off (measured no faster). Delete the file to bring the cap back. |
 | Low frame rate in areas with long views | Create `ux0:data/kotor2/room_distance.txt` containing a distance in metres, for example `35`, and relaunch. Rooms farther than that from the camera are not drawn: distant geometry disappears (Peragus, 17 rooms beyond 35 m: 66.7 → 51.0 ms per frame). Delete the file to draw every room again. |
 
