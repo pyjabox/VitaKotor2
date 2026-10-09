@@ -175,24 +175,36 @@ What is enabled by default:
 
 ### From Your Android Copy
 
-Use the 32-bit ARM (`armeabi-v7a`) build of KOTOR II. The tested layout uses:
+The port requires **version 2.0.4** of the Android app, and its **32-bit ARM**
+libraries: the ones in the APK's `lib/armeabi-v7a/` folder, not `arm64-v8a/`
+or `x86/`. The loader patches that exact build of `libkotor2.so` at fixed
+places, so libraries from any other release or CPU type crash the game at
+launch. A later Android update can keep the same OBB files while changing the
+libraries, so check the libraries even if your OBBs match.
 
-- `libkotor2.so`
-- `libObbVfs.so`
-- `libc++_shared.so`
-- `libminiz.so`
-- `libLzmaLib.so`
-- `main.213.com.aspyr.swkotorii.obb`
-- `patch.14.com.aspyr.swkotorii.obb`
+Your files must match these exactly:
 
-Different Android versions may use different OBB version numbers. This loader's
-paths are currently compiled for the names above.
+| File | Size (bytes) | VitaShell shows | SHA-256 |
+|---|---:|---:|---|
+| `libkotor2.so` | 8,998,760 | 8.58 MB | `bee3bce9b8278d0f9655e4bd6073705ae042bbb3956f1c1814d768b32ab895b1` |
+| `libObbVfs.so` | 75,312 | 73.55 KB | `c2591e7d0516ff8608a6233db85525cb1307d9445fc395fcf3a532e2bc34d917` |
+| `libc++_shared.so` | 554,808 | 541.80 KB | `d78b36580b9c90afb003fad52e7844b9122b2ba47c13912da5fca66bd9a438bf` |
+| `libminiz.so` | 46,640 | 45.55 KB | `f0564f270be8ba29890d98f350894b902cedaa8434b032c42ea44e5681d856ae` |
+| `libLzmaLib.so` | 22,072 | 21.55 KB | `93f14a1f80572e98e3a85bacfb710bb728df19189851b0836acbc89d0d9b3cf1` |
+| `main.213.com.aspyr.swkotorii.obb` | 1,911,051,359 | 1.78 GB | `ae31cabcae52cd7ee7ddfc0b4b1015e1bae173641e01810e4b0ded7d5992fabf` |
+| `patch.14.com.aspyr.swkotorii.obb` | 1,861,087,516 | 1.73 GB | `d174225d0821f3d7b631ad2dbf8c5ea93a9695691c2a2fa869c3408d0dbfc564` |
+
+To compute a SHA-256 on a computer: `certutil -hashfile <file> SHA256` on
+Windows, `shasum -a 256 <file>` on macOS, `sha256sum <file>` on Linux.
+
+Keep the OBB names exactly as above: the loader looks for those names.
 
 ## Installation
 
 1. Install `KOTOR2.vpk` with VitaShell. The title ID is `KOTR00002`.
 2. Create `ux0:data/kotor2/`.
-3. Copy the five required ARM libraries into that directory.
+3. Copy the five libraries from the APK's `lib/armeabi-v7a/` folder into that
+   directory, and check them against the table above.
 4. Copy both OBB archives without renaming them from the tested names.
 5. Copy the APK's `assets/` directory, preserving its contents and structure.
    The tested release includes `AVConfig.json`, `iosdialog.otf`, and
