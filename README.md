@@ -14,7 +14,7 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.5.0). Core gameplay and the major
+**Playable work in progress (v0.5.1). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
@@ -23,7 +23,9 @@ lines no longer freeze the game for 0.3–0.6 s. v0.4.2 brings the boot to the
 title from about 34 s to about 24 s, builds loading-screen images 2–6 times
 faster and caps the frame rate at an even 30 FPS. v0.5.0 brings back the front
 touchscreen alongside the buttons and shows the game's own loading screen while
-it boots. Performance tuning and broad playthrough validation remain active.**
+it boots. v0.5.1 fixes the stock game stopping on the SAVING screen at the end
+of the prologue. Performance tuning and broad playthrough validation remain
+active.**
 
 ### Working and validated
 
@@ -144,6 +146,15 @@ What is enabled by default:
     programs no draw has used lately are freed. Requests vitaGL repeats on
     every draw are answered from a cache. KOTOR II uses far less of the pool
     than KOTOR I (17 KB after 12 minutes on hardware), so this is a safeguard.
+
+- **New in v0.5.1:**
+  - **File information in the Android layout:** the loader now gives the game
+    file types, sizes and dates in the layout Android's C library uses. It was
+    passing the Vita's own layout, so the game misread some files' type and
+    size: in the stock game (without Restored Content), the area file copied
+    when leaving the Ebon Hawk prologue was taken for a folder, and the game
+    stayed on the SAVING screen
+    ([issue #2](https://github.com/pyjabox/VitaKotor2/issues/2)).
 
 ### Remaining limitations
 

@@ -780,8 +780,11 @@ rendering defects.
 | Vsync on/off, A/B (section 5.15) | `e2ccb433c2714975adf6e3c2236281ea6d2d729e07b1c75ffcdb8e87eaac6c79` |
 | v0.4.2 eboot | `4d6eb9d9b79d57e648b187be592ee904b737577b14b6fb75af6f3648aaf402c3` |
 | v0.5.0 eboot | `a92eec91d207cd508433a30607b6ddad8ea7330ed89f689f27b4feb94859d3c2` |
+| v0.5.1 eboot | `da4d9ed9737de0edf06461cc63a7a524c7218ee39b144e79b70d30a04a6fdbdf` |
 
 ## 15. Current decision
+
+v0.5.1 is v0.5.0 with the loader's stat()/fstat() returning bionic's struct stat for every call (loader/fs_patch.c), which fixes the stock game's hang at the end of the prologue. Boot time and frame rate are as in v0.5.0.
 
 v0.5.0 is v0.4.2 plus the game's own loading screen during the boot (its assets cost about 0.56 s), the vertex-program pool of section 8 (a safeguard: 17 KB used in 12 minutes), and the front touchscreen alongside the buttons. Frame rate is as in v0.4.2.
 
