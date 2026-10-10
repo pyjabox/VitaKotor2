@@ -240,18 +240,26 @@ static DIR *fs_opendir(const char *path) {
   if (!d) log_printf("[FS] opendir MISS: %s", t);
   return d;
 }
-// `_findfirst` reads Android ARM32/bionic stat fields at +16/+48/+80, while
-// VitaSDK fills newlib's incompatible layout. The apparent stat call at
-// libkotor2.so+0x5b4af0 does not reach this resolver directly: KOTOR's internal
-// stat()/statImpl dispatches through ASL FsApi::Native::stat, whose callback
-// returns here from +0x59d77c (LR +0x59d780).
+// stat()/fstat() for the Android libraries: VitaSDK's newlib fills its own
+// 40-byte struct stat (st_mode at +4, st_size at +16), while every caller in
+// libkotor2 and libObbVfs reads bionic's 104-byte ARM32 layout (st_mode at +16,
+// st_size at +48, st_mtime at +80). Passing newlib's struct through made the
+// engine read a file's SIZE as its MODE: any file whose size has 0x4 in bits
+// 12-15 looked like a directory. currentgame/002ebo.rim (19552 = 0x4c60 bytes,
+// the stock game's next area after the prologue) was such a file:
+// CopyModuleToCurrentGame (GetFileAttributesA) and WipeDirectory (_findfirst)
+// both took it for a folder, the area never loaded, and the game sat on the
+// SAVING screen in its main-menu state forever (GitHub issue #2). Restored
+// Content ships its areas as .mod files, which never take that path.
 //
-// LR alone is not enough to identify `_findfirst`: every Native::stat callback
-// has that same return address. Converting every such call corrupts callers that
-// supplied a native-sized output buffer and caused the startup crash observed
-// before save enumeration. Restrict the ABI conversion to the save tree. This
-// covers `_findfirst` candidates such as `./saves/000001 - autosave` without
-// changing unrelated startup/resource stat calls.
+// Every libkotor2 call site was checked (2026-10-10): _findfirst, the
+// GetFileAttributes* and CopyFile* helpers, PathFileExists*, CreateDirectoryA,
+// CExoResMan::RemoveFile, validPath and the rest all hand stat a buffer of at
+// least 104 bytes, through ASL::FsApi::Native::stat (whose callback returns
+// here from +0x59d77c, LR +0x59d780) or fstat directly. So the conversion is
+// made for every call. (An older note here blamed a startup crash on converting
+// every call; that change is not in the history, and no caller with a smaller
+// buffer exists.)
 struct bionic_stat {
   uint64_t st_dev;
   uint32_t __pad0;
@@ -286,6 +294,19 @@ _Static_assert(__builtin_offsetof(struct bionic_stat, st_mtime_sec) == 80,
 #define BIONIC_S_IFDIR 0040000
 #define BIONIC_S_IFREG 0100000
 
+static void bionic_stat_from(void *out, const struct stat *n) {
+  struct bionic_stat *st = out;
+  memset(st, 0, sizeof(*st));
+  st->st_mode = (S_ISDIR(n->st_mode) ? BIONIC_S_IFDIR : BIONIC_S_IFREG) | (n->st_mode & 0777);
+  st->st_nlink = 1;
+  st->st_size = n->st_size;
+  st->st_blksize = 512;
+  st->st_blocks = ((uint64_t)n->st_size + 511) / 512;
+  st->st_atime_sec = n->st_atime;
+  st->st_mtime_sec = n->st_mtime;
+  st->st_ctime_sec = n->st_ctime;
+}
+
 /* Must stay the function the engine calls: it tells the save list's caller
  * by its return address (no wrapper in between). */
 static int fs_stat(const char *path, void *out) {
@@ -296,27 +317,26 @@ static int fs_stat(const char *path, void *out) {
 
   uintptr_t caller = (uintptr_t)__builtin_return_address(0) & ~(uintptr_t)1;
   uintptr_t caller_off = kotor_mod.text_base ? caller - kotor_mod.text_base : 0;
-  int is_save_path = path && strstr(path, "saves");
-  if (!is_save_path || !kotor_mod.text_base || caller_off != 0x59d780u)
-    return stat(t, out);
+  int is_save_list = path && strstr(path, "saves") && kotor_mod.text_base &&
+                     caller_off == 0x59d780u;
 
   struct stat native_st;
   int r = stat(t, &native_st);
-  if (r == 0 && out) {
-    struct bionic_stat *st = out;
-    memset(st, 0, sizeof(*st));
-    st->st_mode = (S_ISDIR(native_st.st_mode) ? BIONIC_S_IFDIR : BIONIC_S_IFREG) |
-                  (native_st.st_mode & 0777);
-    st->st_size = native_st.st_size;
-    st->st_atime_sec = native_st.st_atime;
-    st->st_mtime_sec = native_st.st_mtime;
-    st->st_ctime_sec = native_st.st_ctime;
-  } else if (is_save_path) {
+  if (r == 0) {
+    if (out) bionic_stat_from(out, &native_st);
+  } else if (is_save_list) {
     // Misses remain useful for diagnosing partially-created save slots. Successful
     // probes are intentionally silent: opening Load Game stats every file in every
     // slot, and synchronous memory-card logging made the real-Vita menu sluggish.
     log_printf("[save-stat] MISS %s -> %d", t, r);
   }
+  return r;
+}
+
+static int fs_fstat(int fd, void *out) {
+  struct stat native_st;
+  int r = fstat(fd, &native_st);
+  if (r == 0 && out) bionic_stat_from(out, &native_st);
   return r;
 }
 
@@ -561,6 +581,7 @@ static const so_default_dynlib fs_dynlib[] = {
   { "access",   (uintptr_t)&fs_access },
   { "chdir",    (uintptr_t)&fs_chdir },
   { "stat",     (uintptr_t)&fs_stat },
+  { "fstat",    (uintptr_t)&fs_fstat },
   { "opendir",  (uintptr_t)&fs_opendir },
   { "readdir",  (uintptr_t)&fs_readdir },
   { "closedir", (uintptr_t)&fs_closedir },

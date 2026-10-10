@@ -216,7 +216,10 @@
 // string, so the test is a few byte compares and no vsnprintf, no lock, no
 // card I/O -- and anything whose format mentions a failure, an error or a
 // warning is kept regardless, as is everything written in panic mode.
+// Test builds can pass -DLOG_DIAGNOSTICS=1 to keep every line.
+#ifndef LOG_DIAGNOSTICS
 #define LOG_DIAGNOSTICS 0
+#endif
 
 // Maximum-FPS benchmark logging: discard every routine line before formatting.
 // Failure/error/warning lines and panic-mode crash dumps remain available.
