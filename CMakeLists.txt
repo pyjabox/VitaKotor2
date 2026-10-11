@@ -63,6 +63,7 @@ add_executable(KOTOR2
   loader/glw_prof.c
   loader/occlusion_cull.c
   loader/ai_list_cache.c
+  loader/ai_throttle.c
   loader/cansee_cache.c
   loader/bloom_ctl.c
   loader/ramfile.c

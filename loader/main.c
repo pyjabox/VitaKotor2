@@ -33,6 +33,7 @@
 #include "bloom_ctl.h"
 #include "gl_state_filter.h"
 #include "ai_budget.h"
+#include "ai_throttle.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -4807,14 +4808,47 @@ int main(int argc, char *argv[]) {
   // After every installer above that may own Gob::Render/VisibilityCheck
   // (telemetry, portal Gob filter): culling takes both slots or neither.
   occlusion_cull_install();
-  ai_list_cache_install();
-  ai_list_cache_set(AI_LIST_CACHE_ENABLE);
-  cansee_cache_install();
-  cansee_cache_set(CANSEE_CACHE_ENABLE);
+  /* ux0:data/kotor2/ai_mode.txt containing 0 restores the game's own AI loop:
+   * no throttle (ai_throttle.c), no list cache, no CanSee cache. Test builds:
+   * t, l, c leave out one of them, a alternates the throttle with the engine's
+   * own every 10 s, a number sets the server AI budget in milliseconds. */
+  unsigned ai_off = 0, ai_ms = 0;
+  int ai_ab = 0;
+  {
+    char m[8] = {0};
+    SceUID fd = sceIoOpen(DATA_PATH "/ai_mode.txt", SCE_O_RDONLY, 0);
+    if (fd >= 0) {
+      int n = sceIoRead(fd, m, sizeof m - 1);
+      sceIoClose(fd);
+      if (n >= 1 && m[0] == '0' && (n == 1 || m[1] < '0' || m[1] > '9')) {
+        ai_off = 7;
+      } else {
+        for (int i = 0; i < n; i++) {
+          if (m[i] >= '0' && m[i] <= '9') ai_ms = ai_ms * 10 + (unsigned)(m[i] - '0');
+          else if (m[i] == 'a') ai_ab = 1;
+          else if (m[i] == 't') ai_off |= 1;
+          else if (m[i] == 'l') ai_off |= 2;
+          else if (m[i] == 'c') ai_off |= 4;
+        }
+      }
+      log_printf("[aithrottle] ai_mode.txt: throttle %s, list cache %s, cansee cache %s, budget %s",
+                 ai_off & 1 ? "OFF" : ai_ab ? "A/B" : "on", ai_off & 2 ? "OFF" : "on",
+                 ai_off & 4 ? "OFF" : "on", ai_ms ? "set" : "engine's");
+    }
+  }
+  if (!(ai_off & 2)) {
+    ai_list_cache_install();
+    ai_list_cache_set(AI_LIST_CACHE_ENABLE);
+  }
+  if (!(ai_off & 4)) {
+    cansee_cache_install();
+    cansee_cache_set(CANSEE_CACHE_ENABLE);
+  }
   bloom_ctl_install();
   bloom_ctl_set_off(BLOOM_DISABLE);
   gl_state_filter_install();
-  ai_budget_install();
+  if (ai_ms) ai_budget_install_us(ai_ms * 1000u);
+  if (!(ai_off & 1)) ai_throttle_install(0, ai_ab);
   dxt_native_install();
   mip_gpu_install();
   room_dist_install();

@@ -13,6 +13,12 @@
  *   budget  3 ms: 3.4-5.3 ms, ~35% (creatures every ~3 frames)
  * The user played the 3 ms windows and noticed nothing; AI_BUDGET_US picks it.
  *
+ * 2026-10-11: no longer the default. The budget is shared out from level 4
+ * down, so 3 ms also starved level 4, where AIUpdate puts creatures in combat:
+ * party members moved toward their targets for frames without turning
+ * ("moonwalk"). ai_throttle.c limits the levels below 4 instead; this remains
+ * for tests (ai_mode.txt with a number of milliseconds).
+ *
  * The instruction is checked before it is rewritten; any other bytes leave the
  * engine alone. */
 
@@ -38,15 +44,19 @@ static void movw_r4(uint8_t out[4], uint16_t imm) {
 }
 
 void ai_budget_install(void) {
-  if (!AI_BUDGET_US || AI_BUDGET_US == 10000) return;
+  ai_budget_install_us(AI_BUDGET_US);
+}
+
+void ai_budget_install_us(unsigned us) {
+  if (!us || us == 10000 || us > 0xffff) return;
   uint8_t *at = (uint8_t *)(kotor_mod.text_base + AI_BUDGET_OFF);
   if (memcmp(at, k_engine_insn, sizeof k_engine_insn)) {
     log_printf("[aibudget] NOT applied: unexpected bytes at +0x%x", AI_BUDGET_OFF);
     return;
   }
   uint8_t insn[4];
-  movw_r4(insn, AI_BUDGET_US);
+  movw_r4(insn, (uint16_t)us);
   kuKernelCpuUnrestrictedMemcpy(at, insn, sizeof insn);
   kuKernelFlushCaches(at, sizeof insn);
-  log_printf("[aibudget] server AI budget 10000 -> %u us per frame", (unsigned)AI_BUDGET_US);
+  log_printf("[aibudget] server AI budget 10000 -> %u us per frame", us);
 }

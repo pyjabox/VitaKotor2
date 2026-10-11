@@ -641,10 +641,24 @@
 #define INI_NO_SHADOWS            1
 #endif
 // Server AI master budget per frame in microseconds (loader/ai_budget.c); the
-// engine's is 10000. 0 leaves the engine alone.
+// engine's is 10000. No longer applied by default: a smaller budget also cut
+// level 4, where creatures in combat sit, and they turned to face their target
+// late ("moonwalking"). ai_throttle.c replaces it; ai_mode.txt with a number
+// still sets a budget, for tests.
 #ifndef AI_BUDGET_US
 #define AI_BUDGET_US              3000
 #endif
+// Server AI time (loader/ai_throttle.c), below AI level 4 only: objects that
+// are not creatures with an action queued or walking get an AIUpdate once every
+// AI_THROTTLE_PERIOD frames, and these levels stop once the frame's AI has run
+// AI_THROTTLE_CAP_US (but get AI_THROTTLE_MIN_LOWER_US after level 4 each
+// frame). Level 4 keeps the engine's own budget. Dxun fight: AI 10.2 -> ~5.3
+// ms per frame. ux0:data/kotor2/ai_mode.txt containing 0 turns it off.
+#ifndef AI_THROTTLE_PERIOD
+#define AI_THROTTLE_PERIOD        3
+#endif
+#define AI_THROTTLE_CAP_US        3000
+#define AI_THROTTLE_MIN_LOWER_US  1000
 // The game's DXT textures are uploaded compressed instead of decoded to RGBA on
 // the CPU by ASLgl (loader/dxt_native.c).
 #ifndef DXT_NATIVE

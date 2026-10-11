@@ -31,6 +31,7 @@
 #include "occlusion_cull.h"
 #include "autotest.h"
 #include "ai_list_cache.h"
+#include "ai_throttle.h"
 #include "cansee_cache.h"
 #include "gl_state_filter.h"
 #include "so_util.h"
@@ -81,6 +82,7 @@ static void SDL_GL_SwapWindow_hook(SDL_Window *w) {
   occlusion_cull_on_swap(swap_end);
   autotest_on_swap(swap_end);
   ai_list_cache_on_swap();
+  ai_throttle_on_swap();
   cansee_cache_on_swap();
   {
     static uint64_t prev_swap;
