@@ -25,7 +25,7 @@ The largest confirmed improvements are:
 12. **GL worker thread (section 5.7):** vitaGL runs on core 2. The game thread records commands instead, at about 4.5 ms per frame instead of about 8 ms. Frame at the busy spot: 61.7–63.7 → 58.5 ms.
 13. **No shadows (section 9.2):** about 4.4 ms and 80 draws per frame in a busy scene. The loader sets the game's own `Shadows=0` in `swkotor2.ini`.
 14. **FMOD update skip (section 5.8):** the game calls `System::update` about 50 times per frame; the loader now scans its channels only when a sound has ended. About 1 ms per frame.
-15. **Server AI budget 3 ms (section 5.9):** the AI master spent its full 10 ms budget every frame. At 3 ms it takes 3.4–5.3 ms.
+15. **Server AI (section 5.9):** the AI master spent its full 10 ms budget every frame. A 3 ms budget brought it to 3.4–5.3 ms but delayed creatures in combat ("moonwalk"); since v0.5.1 `ai_throttle.c` limits only what is not in combat: about 5.3 ms in a Dxun fight, against 10.2 ms.
 16. **Release candidate 1, released as v0.3.0 (2026-10-04)**, all of the above on top of item 11:
     - the busy spot runs at 49–53 ms per frame (~19–20 FPS), against ~62 ms before;
     - light scenes (140–155 draws) run at 27–30 ms (34–37 FPS);
@@ -374,6 +374,27 @@ In-session A/B (`loader/fx_ab.c`, busy scenes):
 | 3 ms | 3.4–5.3 ms | ~35%; creatures about every third frame |
 
 The user played the 3 ms windows, noticed nothing, and chose 3 ms. `loader/ai_budget.c` (`AI_BUDGET_US`, 3000 by default) checks the instruction bytes before rewriting the immediate.
+
+**Replaced after v0.5.1 (2026-10-11).** In fights on Dxun, party members walked to their targets without turning toward them ("moonwalk"). Hardware runs with `ai_mode.txt`: all AI changes off, no moonwalk; 5 ms budget with both caches, moonwalk; 10 ms budget with both caches, none. So the budget alone caused it, and both caches are cleared.
+
+Why: `UpdateState` gives each level 60% of the remaining budget, level 4 first, and `CSWSCreature::AIUpdate` moves creatures to level 4 while they are in combat (`SetAILevel(this, 4)`). With 3 ms, level 4 got 1.8 ms and its creatures went frames without an `AIUpdate`, while the walk pass, which runs before every update, kept moving them. Their facing comes from the action code in `AIUpdate`, so it lagged their movement.
+
+Where the time goes at 10 ms (pcprof4, 2026-10-04): the master was 9.2 ms per frame. `CSWSCreature::AIUpdate` was 3.7 ms: `SpawnInHeartbeatPerception` 1.8 ms (perception and heartbeat scripts, already on the engine's own timers), actions 0.6 ms, scripts 0.4 ms, `ComputeHeight` 0.4 ms. Placeables, doors and items 0.9 ms, events 0.7 ms, the loop itself about 2.5 ms (a walk pass over the whole level before every update). A typical frame updated ~250 objects, about 230 of them not creatures.
+
+`loader/ai_throttle.c` hooks `CServerAIList::GetNextObject` (its relocation slot, from `UpdateState`'s call site only) and keeps the engine's 10 ms budget:
+- level 4 is never touched;
+- below it, objects that are not creatures with an action queued or walking (the walk pass's own test) are updated every third frame and skipped in the round robin otherwise;
+- below it, `GetNextObject` answers NULL once the frame's AI has run 3 ms (at least 1 ms after level 4), which ends that level's loop for the frame without moving its cursor.
+
+Skipping alone saved nothing in the Dxun fight: the AI filled its 10 ms even in the original game and spent the freed time on further updates. The cap is what saves the time. Hardware A/B in one fight, 10 s windows alternating (`ai_mode.txt` `a`):
+
+| | Original (10 ms) | `ai_throttle.c` |
+|---|---:|---:|
+| AI per frame | 10.2 ms | about 5.3 ms |
+| Creatures in combat updated per frame | 2.9 of 2.9 | 2.9 of 2.9 |
+| Frame | about 45 ms | about 39 ms |
+
+No moonwalk in either. `ux0:data/kotor2/ai_mode.txt` containing `0` turns off the throttle and both AI caches.
 
 ### 5.10 Native DXT texture uploads
 

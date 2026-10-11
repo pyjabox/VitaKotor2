@@ -89,8 +89,12 @@ What is enabled by default:
     evicting constantly.
   - **AI caches:** walk-pass and line-of-sight results are reused (about
     1.6 ms per frame).
-  - **Server AI budget of 3 ms per frame** instead of 10 ms (about 4–5 ms per
-    frame).
+  - **Server AI spent on what matters:** creatures in combat, acting or
+    walking are updated every frame; idle creatures, placeables, doors and
+    items every third frame at most, within about 3 ms per frame (a Dxun
+    fight: 10.2 → about 5.3 ms of AI per frame). Until v0.5.1 a 3 ms budget
+    for all of it delayed creatures in combat, which made them walk to their
+    targets without turning ("moonwalk").
   - **Audio update:** the FMOD channel scan, which runs about 50 times per
     frame, is skipped when no sound has ended (about 1 ms per frame).
   - **Mobile bloom skipped** (GPU 36 → 22 ms per frame, no visible difference
@@ -156,6 +160,11 @@ What is enabled by default:
     stayed on the SAVING screen
     ([issue #2](https://github.com/pyjabox/VitaKotor2/issues/2)).
 
+- **On main since v0.5.1 (not yet in a release):**
+  - **No more moonwalking in fights:** the server AI keeps every creature in
+    combat updated each frame and limits the rest instead (see above), for
+    about the same frame time as the old 3 ms budget.
+
 ### Remaining limitations
 
 | Area | Current behavior |
@@ -163,7 +172,7 @@ What is enabled by default:
 | Startup | The screen is black for about 5 s, then shows the loading screen; it stops moving when the game takes over (about 19 s in) and stays up until the legal screen. A cold launch can take roughly two minutes while archives are scanned and shaders compile, and the loading screen can sit still for much of it. Wait before assuming the process has hung. Later launches reach the title in about 24 s; about one launch in three takes about 11 s longer, in the engine's scan of `dlc/` (cause not yet known). |
 | Performance | Heavy scenes remain CPU-bound, mostly in the engine's per-object rendering work: about 19–20 FPS in the busiest tested scenes. A 10 m distance filter can reduce draws further but remains too experimental for releases. See the [performance reference](docs/specs/PERFORMANCE.md). |
 | Visual changes | There are no dynamic shadows: the loader sets the game's own `Shadows=0` (and `Soft Shadows=0`) in `swkotor2.ini` at every launch. The in-game option still works until the next launch. The mobile bloom passes are skipped (no game option controls them). Rooms keep their baked lighting. |
-| AI updates | The server AI gets 3 ms per frame instead of 10 ms, so each object is updated less often (creatures about every third frame in busy areas). Nothing was noticed in testing, but reactions in very crowded scenes may lag slightly. |
+| AI updates | Creatures in combat, acting or walking get their AI update every frame. Idle creatures, placeables, doors and items are updated less often (every third frame at most, and the AI outside combat stops after about 3 ms per frame). Nothing was noticed in testing, but idle characters in very crowded scenes may react slightly later. |
 | Audio | Known issue: some sounds can cut in and out. Under investigation. |
 | Latency | The GL worker lets the game run up to one frame ahead of the display. An object stepping out from cover can appear up to three frames late (occlusion culling). |
 | Hitches | Occasional single frames of about 0.12–0.23 s remain when new content is first read from the memory card (about 10 MB/s): the minimap's first draw, dialog entries and their voices, creatures spawned by scripts. Loading-screen images still take about 0.1–0.35 s each. |
@@ -297,6 +306,7 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Texture problems you suspect the native DXT path of | Create `ux0:data/kotor2/dxt_mode.txt` containing `0` and relaunch. DXT textures are then decoded on the CPU, as in v0.3.0. Delete the file to turn the native path back on. |
 | Image problems you suspect the GPU mipmaps of | Create `ux0:data/kotor2/mipgen_mode.txt` containing `0` and relaunch. The engine then builds every mip chain on the CPU, as in v0.3.0. Delete the file to turn it back on. |
 | Problems at startup you suspect the loading screen of | Create `ux0:data/kotor2/loadscreen_mode.txt` containing `0` and relaunch. The screen then stays black until the legal screen, as in v0.4.2. Delete the file to bring it back. |
+| AI problems you suspect the port's AI changes of | Create `ux0:data/kotor2/ai_mode.txt` containing `0` and relaunch. The server AI then updates every object every frame, as the original game does (slower in busy areas). Delete the file to go back. |
 | Input problems you suspect the touchscreen of | Create `ux0:data/kotor2/touch_mode.txt` containing `0` and relaunch. The game then uses the buttons only, as in v0.4.2. Delete the file to bring touch back. |
 | Graphics problems you suspect the vertex-program pool of | Create `ux0:data/kotor2/patcher_mode.txt` containing `0` and relaunch. vitaGL's requests then go straight to the shader patcher and nothing is freed, as in v0.4.2; the pool stays at 4 MB. Delete the file to turn it back on. |
 | You want more than 30 FPS in light scenes | Create `ux0:data/kotor2/fps_cap.txt` containing `0` and relaunch. `LockFramerate=1` under `[Graphics Options]` in `swkotor2.ini` then caps the game again, and `V-Sync=0` turns vsync off (measured no faster). Delete the file to bring the cap back. |
