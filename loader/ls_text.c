@@ -14,6 +14,47 @@
 static FT_Library s_lib;
 static FT_Face s_face;
 
+/* Rendered glyphs, kept while the font is open. Each FT_Load_Char of this CFF
+ * font costs real time on the Vita, and the boot menu and the loading screen
+ * draw the same few dozen letters at a handful of sizes over and over: the
+ * menu re-rendering eight rows of uncached text took most of a second per
+ * button press on hardware (2026-10-13). */
+#define GLYPHS 1024                /* power of two */
+typedef struct { uint32_t cp; int px, used, left, top, adv; unsigned w, h; uint8_t *bits; } Glyph;
+static Glyph s_glyph[GLYPHS];
+static int s_nglyph;
+
+static void glyphs_clear(void) {
+  for (int i = 0; i < GLYPHS; i++) free(s_glyph[i].bits);
+  memset(s_glyph, 0, sizeof s_glyph);
+  s_nglyph = 0;
+}
+
+/* `cp` at the size last set with FT_Set_Pixel_Sizes, which is `px`. */
+static const Glyph *glyph(uint32_t cp, int px) {
+  if (s_nglyph >= GLYPHS / 2) glyphs_clear();      /* keep probes short; refill as used */
+  uint32_t h = (cp * 2654435761u + (uint32_t)px * 40503u) & (GLYPHS - 1);
+  Glyph *g = &s_glyph[h];
+  while (g->used && !(g->cp == cp && g->px == px)) g = &s_glyph[(++h) & (GLYPHS - 1)];
+  if (g->used) return g;
+  g->used = 1;
+  g->cp = cp;
+  g->px = px;
+  s_nglyph++;
+  if (FT_Load_Char(s_face, cp, FT_LOAD_RENDER)) return g;      /* nothing to draw, no advance */
+  FT_GlyphSlot slot = s_face->glyph;
+  FT_Bitmap *b = &slot->bitmap;
+  g->left = slot->bitmap_left;
+  g->top = slot->bitmap_top;
+  g->adv = (int)(slot->advance.x >> 6);
+  if (b->width && b->rows && (g->bits = malloc((size_t)b->width * b->rows))) {
+    g->w = b->width;
+    g->h = b->rows;
+    for (unsigned r = 0; r < b->rows; r++) memcpy(g->bits + (size_t)r * b->width, b->buffer + (size_t)r * b->pitch, b->width);
+  }
+  return g;
+}
+
 int ls_text_open(const char *path) {
   if (s_face) return 1;
   if (FT_Init_FreeType(&s_lib)) return 0;
@@ -27,6 +68,7 @@ int ls_text_open(const char *path) {
 }
 
 void ls_text_close(void) {
+  glyphs_clear();
   if (s_face) FT_Done_Face(s_face);
   if (s_lib) FT_Done_FreeType(s_lib);
   s_face = NULL;
@@ -46,10 +88,6 @@ static int utf8_decode(const char *s, uint32_t *cp, int max) {
   return n;
 }
 
-static int advance(uint32_t c) {
-  if (FT_Load_Char(s_face, c, FT_LOAD_DEFAULT)) return 0;
-  return (int)(s_face->glyph->advance.x >> 6);
-}
 
 uint8_t *ls_text_image(const char *utf8, int px, int max_w, int line_h, int *pw, int *ph) {
   if (!s_face || !utf8 || px <= 0 || max_w <= 0) return NULL;
@@ -57,7 +95,7 @@ uint8_t *ls_text_image(const char *utf8, int px, int max_w, int line_h, int *pw,
   static uint32_t cp[MAX_CHARS];
   static int adv[MAX_CHARS];
   int n = utf8_decode(utf8, cp, MAX_CHARS);
-  for (int i = 0; i < n; i++) adv[i] = advance(cp[i]);
+  for (int i = 0; i < n; i++) adv[i] = glyph(cp[i], px)->adv;
 
   /* Greedy wrap at spaces; a word wider than the line is cut. */
   int start[MAX_LINES], end[MAX_LINES], width[MAX_LINES], lines = 0, i = 0;
@@ -94,20 +132,18 @@ uint8_t *ls_text_image(const char *utf8, int px, int max_w, int line_h, int *pw,
   for (int l = 0; l < lines; l++) {
     int x = (img_w - width[l]) / 2, base = l * line_h + ascent;
     for (int k = start[l]; k < end[l]; k++) {
-      if (FT_Load_Char(s_face, cp[k], FT_LOAD_RENDER)) continue;
-      FT_GlyphSlot g = s_face->glyph;
-      FT_Bitmap *b = &g->bitmap;
-      for (unsigned r = 0; r < b->rows; r++) {
-        int y = base - g->bitmap_top + (int)r;
+      const Glyph *g = glyph(cp[k], px);
+      for (unsigned r = 0; r < g->h; r++) {
+        int y = base - g->top + (int)r;
         if (y < 0 || y >= img_h) continue;
-        for (unsigned c = 0; c < b->width; c++) {
-          int xx = x + g->bitmap_left + (int)c;
+        for (unsigned c = 0; c < g->w; c++) {
+          int xx = x + g->left + (int)c;
           if (xx < 0 || xx >= img_w) continue;
-          uint8_t v = b->buffer[r * b->pitch + c], *d = a + (size_t)y * img_w + xx;
+          uint8_t v = g->bits[r * g->w + c], *d = a + (size_t)y * img_w + xx;
           if (v > *d) *d = v;
         }
       }
-      x += (int)(g->advance.x >> 6);
+      x += g->adv;
     }
   }
 

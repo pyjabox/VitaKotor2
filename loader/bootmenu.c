@@ -137,12 +137,47 @@ static void buttons(Buttons *b) {
   }
 }
 
-typedef struct { int w, h; } Size;
+/* What each slot's texture holds, so a text is rendered only when it
+ * changes: colour comes from the quad's tint, not the texture. */
+typedef struct { int w, h, px, max_w; char s[ROW_LEN]; } Size;
 static Size s_size[BOOTUI_SLOTS];
 
 static void text(int slot, const char *s, int px, int max_w) {
   Size *z = &s_size[slot];
+  if (z->px == px && z->max_w == max_w && !strcmp(z->s, s)) return;
+  snprintf(z->s, sizeof z->s, "%s", s);
+  z->px = px;
+  z->max_w = max_w;
   if (!bootui_text(slot, s, px, max_w, px + 6, &z->w, &z->h)) z->w = z->h = 0;
+}
+
+/* Presses since the last call, from the pad's own sample buffer (one sample
+ * per frame, the last 64 kept): a tap shorter than one of our frames still
+ * counts, and two taps count twice. */
+typedef struct { int up, down, ok, cancel, changed; } Presses;
+static unsigned s_pad_prev;
+static uint64_t s_pad_ts;
+
+static Presses presses(const Buttons *b) {
+  Presses p = {0, 0, 0, 0, 0};
+  SceCtrlData buf[64];
+  memset(buf, 0, sizeof buf);
+  int n = sceCtrlPeekBufferPositiveExt2(0, buf, 64);
+  for (;;) {                                   /* the next sample after s_pad_ts, oldest first */
+    int k = -1;
+    for (int i = 0; i < n; i++)
+      if (buf[i].timeStamp > s_pad_ts && (k < 0 || buf[i].timeStamp < buf[k].timeStamp)) k = i;
+    if (k < 0) break;
+    s_pad_ts = buf[k].timeStamp;
+    unsigned edge = buf[k].buttons & ~s_pad_prev;
+    if (buf[k].buttons != s_pad_prev) p.changed = 1;
+    s_pad_prev = buf[k].buttons;
+    p.up += !!(edge & SCE_CTRL_UP);
+    p.down += !!(edge & SCE_CTRL_DOWN);
+    p.ok |= !!(edge & b->ok);
+    p.cancel |= !!(edge & b->cancel);
+  }
+  return p;
 }
 
 static void put(BootQuad *q, int *n, int slot, float x, float y, float w, float h, const float *rgb) {
@@ -157,44 +192,39 @@ static void centred(BootQuad *q, int *n, int slot, float y, const float *rgb) {
 /* 1: confirmed, *sel the row; 0: cancelled; -1: no input for IDLE_S. */
 static int pick(const Buttons *b, const char *title, const char *sub, char rows[][ROW_LEN], int n, int *sel) {
   if (n <= 0) return 0;
+  uint64_t t_open = sceKernelGetProcessTimeWide();
   text(S_TITLE, title, TITLE_PX, SCREEN_W - 80);
   text(S_SUB, sub, SUB_PX, SCREEN_W - 120);
   text(S_FOOT, b->footer, FOOT_PX, SCREEN_W - 80);
   text(S_MORE, "...", ROW_PX, 200);
-  int top = -1, shown_sel = -1;
+  int top = 0, first = 1;
   if (*sel < 0 || *sel >= n) *sel = 0;
-
-  SceCtrlData pad;
-  memset(&pad, 0, sizeof pad);
-  sceCtrlPeekBufferPositiveExt2(0, &pad, 1);
-  unsigned prev = pad.buttons;
   uint64_t idle = sceKernelGetProcessTimeWide();
   for (;;) {
-    memset(&pad, 0, sizeof pad);
-    sceCtrlPeekBufferPositiveExt2(0, &pad, 1);
-    unsigned edge = pad.buttons & ~prev;
-    if (pad.buttons != prev) idle = sceKernelGetProcessTimeWide();
-    prev = pad.buttons;
-    if (edge & SCE_CTRL_UP) *sel = (*sel + n - 1) % n;
-    if (edge & SCE_CTRL_DOWN) *sel = (*sel + 1) % n;
-    if (edge & b->ok) return 1;
-    if (edge & b->cancel) return 0;
+    Presses p = presses(b);
+    if (p.changed) idle = sceKernelGetProcessTimeWide();
+    *sel = ((*sel - p.up + p.down) % n + n) % n;
+    if (p.ok) return 1;
+    if (p.cancel) return 0;
     if (sceKernelGetProcessTimeWide() - idle > (uint64_t)IDLE_S * 1000000u) {
       log_printf("[bootmenu] no input for %d s -- starting with the saved settings", IDLE_S);
       return -1;
     }
 
-    /* Row texts change colour with the selection, so the visible ones are
-     * redrawn when it moves; nothing is rendered while it stands still. */
-    int t = top < 0 ? 0 : top;
-    if (*sel < t) t = *sel;
-    if (*sel >= t + VISIBLE) t = *sel - VISIBLE + 1;
-    if (t != top || *sel != shown_sel) {
-      top = t;
-      shown_sel = *sel;
-      for (int i = 0; i < VISIBLE; i++)
-        if (top + i < n) text(S_ROW0 + i, rows[top + i], ROW_PX, HL_W - 24);
-        else s_size[S_ROW0 + i].w = 0;
+    /* Only rows whose text changed are rendered again (text()). */
+    if (*sel < top) top = *sel;
+    if (*sel >= top + VISIBLE) top = *sel - VISIBLE + 1;
+    uint64_t t0 = sceKernelGetProcessTimeWide();
+    for (int i = 0; i < VISIBLE; i++)
+      if (top + i < n) text(S_ROW0 + i, rows[top + i], ROW_PX, HL_W - 24);
+      else s_size[S_ROW0 + i].w = 0;
+    unsigned ms = (unsigned)((sceKernelGetProcessTimeWide() - t0) / 1000);
+    if (first) {
+      log_printf("[bootmenu] \"%s\" up in %u ms (%d rows)", title,
+                 (unsigned)((sceKernelGetProcessTimeWide() - t_open) / 1000), n);
+      first = 0;
+    } else if (ms > 30) {
+      log_printf("[bootmenu] rows rendered in %u ms", ms);
     }
 
     BootQuad q[BOOTUI_QUADS];
@@ -285,6 +315,7 @@ void bootmenu_run(void) {
   Buttons b;
   buttons(&b);
   bootui_solid(S_SOLID);
+  presses(&b);          /* the presses buffered while the game was starting are not for the menu */
 
   int lang = lang_current();
   int was_on[MODSTACK_MAX];
@@ -328,6 +359,7 @@ void bootmenu_run(void) {
   }
   bootui_free();
   ls_text_close();
+  memset(s_size, 0, sizeof s_size);
 }
 
 /* ---- the MODS button -------------------------------------------------------------- */
