@@ -339,15 +339,19 @@ Give each mod its own folder in `ux0:data/kotor2/mods/`:
 ```text
 ux0:data/kotor2/mods/
 |-- 1_TSLRCM/dlc/mods_english/, mods_french/, ...
-`-- 2_M4-78EP/mm478ep/dlc/mods_english/, mods_russian/
+`-- 2_M4-78EP/dlc/mods_english/, mods_russian/
 ```
 
 - Folders load in alphabetical order. Where two mods change the same file, the
   later one wins, in every language. Number the folders to set the order:
   M4-78EP must come after TSLRCM.
-- A folder can hold the archive as it unpacks: `dlc/mods_<language>/`,
-  `mods_<language>/`, either of those one folder down, or PC-style loose
-  `override/`, `modules/` ... folders, which then apply to every language.
+- A folder can hold the mod as `dlc/mods_<language>/` or `mods_<language>/`,
+  or as PC-style loose `override/`, `modules/` ... folders, which then apply to
+  every language. Don't add a folder level: the Vita cannot create a file more
+  than 10 folders below `ux0:`, and a voice line already sits that deep in
+  `mods/1_TSLRCM/dlc/mods_english/streamvoice/gbl/kreia/`. M4-78EP's archive
+  unpacks as `mm478ep/dlc/`: copy its `dlc/` folder, not `mm478ep/`. The log
+  warns (`[mods]`) about a mod that nests too deep.
 - Each mod is read from its folder for the chosen language, and from its
   `mods_english/` for anything that folder does not have. So a mod made for the
   English game only still works in the other languages, and keeps its priority

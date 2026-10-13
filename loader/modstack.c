@@ -170,6 +170,15 @@ static int find_root(const char *base, char *out, size_t sz, int *loose) {
   return 0;
 }
 
+/* Folder names below the device in `p` ("ux0:data/kotor2/mods" is 3). */
+static int depth_of(const char *p) {
+  const char *c = strchr(p, ':');
+  int n = 0;
+  for (c = c ? c + 1 : p; *c; c++)
+    if (*c != '/' && (c[-1] == '/' || c[-1] == ':')) n++;
+  return n;
+}
+
 static int by_name(const void *a, const void *b) {
   return strcasecmp(((const Mod *)a)->name, ((const Mod *)b)->name);
 }
@@ -210,6 +219,13 @@ void modstack_scan(void) {
           snprintf(m.name, sizeof m.name, "%s", n);
           snprintf(m.label, sizeof m.label, "%s", n);
           s_mod[s_nmod++] = m;
+          /* The Vita creates no file more than 10 folders below ux0:
+           * (measured over FTP, 2026-10-13), and a voice line sits 4 below
+           * a language folder (streamvoice/802/kaah/802kaah001.wav). */
+          int deepest = depth_of(m.root) + (m.loose ? 0 : 1) + 4;
+          if (deepest > 10)
+            log_printf("!!! [mods] %s: its voice files would be %d folders deep, and the Vita stops at 10 -- "
+                       "move the %s folder up into mods/%s/", n, deepest, m.loose ? "game" : "mods_<language>", n);
         }
       }
       memset(&e, 0, sizeof e);
