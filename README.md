@@ -229,15 +229,16 @@ Keep the OBB names exactly as above: the loader looks for those names.
 5. Copy the APK's `assets/` directory, preserving its contents and structure.
    The tested release includes `AVConfig.json`, `iosdialog.otf`, and
    `supplierconfig.json`.
-6. Optionally copy restored-content data into `dlc/`, preserving its original
-   directory structure.
+6. Optionally add mods to `mods/`, one folder each (see [Mods](#mods)), and a
+   voice pack to `localized/` (see [Voice packs](#voice-packs)).
 
 The tested result is:
 
 ```text
 ux0:data/kotor2/
 |-- assets/                                  # required APK assets
-|-- dlc/                                     # optional restored-content data
+|-- localized/                               # optional voice packs
+|-- mods/                                    # optional mods, one folder each
 |-- libc++_shared.so
 |-- libkotor2.so
 |-- libLzmaLib.so
@@ -260,6 +261,113 @@ menu becomes visible.
 
 There is no progress indicator yet. Keep the Vita awake and wait. If the screen
 is still black after several minutes, exit and inspect `ux0:data/kotor2/log.txt`.
+
+## Language
+
+The game ships its text in five languages. On Android it follows the phone's
+language; on the Vita a menu asks before the game starts:
+
+```text
+                              KOTOR II
+
+                    > LANGUAGE:  ENGLISH
+                      MODS:  1_TSLRCM, 2_M4-78EP
+                      START
+```
+
+It opens on the first launch, whenever you **hold L while the game starts**
+(any time until the loading screen appears), and when you press **MODS** in the
+main menu (the Android release's Google Play button), which restarts the game
+into it. Up and down move; the console's confirm button selects; the other
+button goes back. START saves the choice, and going back from this screen keeps
+what was saved. The choice is written to `ux0:data/kotor2/swkotor2.ini`, where
+you can also set it by hand:
+
+```ini
+[Game Options]
+Language=fr
+```
+
+`en`, `fr`, `de`, `it` and `es` are the game's own languages. Voices are English
+unless a [voice pack](#voice-packs) is on the card; the list marks languages
+that have one with **+ VOICES**.
+
+Two more kinds of language show in the list, and run on top of the English game:
+
+- **Fan translations:** a folder in `ux0:data/kotor2/translations/` holding a
+  `dialog.tlk`, plus anything else the translation changes laid out as a
+  `mods_<language>` folder (`override/`, `lips/` ...). The folder name is the
+  list entry. It is saved as `Translation=<folder>`.
+- **Languages a mod brings with its own talk table:** TSLRCM's `mods_russian`,
+  for example, which also ships the Cyrillic fonts.
+
+Text a mod has only in English (M4-78EP's, for example) shows in English in the
+other languages instead of blank lines.
+
+### Voice packs
+
+The Android release has English voices only, but the engine looks for every
+voice line, lip-sync file and voiced movie under
+`ux0:data/kotor2/localized/<language>/` first, and plays the English one when
+it is not there. A PC copy of KOTOR II in French, German, Italian or Spanish has
+those files. To make a pack from one:
+
+1. On the PC, zip the game folder's `StreamVoice`, `lips`, `StreamSounds` and
+   `Movies` folders. On Steam, set the game's language first (Properties,
+   General, Language) so the files are that language's.
+2. On a computer with Python 3, from this repository:
+
+   ```text
+   python3 tools/voicepack.py <the zip or the game folder> <patch.14.com.aspyr.swkotorii.obb> french <out>
+   ```
+
+   The language is `french`, `german`, `italian` or `spanish`. The script
+   copies only the files the Android game keeps per language, leaves out the
+   ones identical to English, and checks every audio file's format. A French
+   copy gives 15,815 voice lines (567 MB), 75 lip-sync files, 317 combat barks
+   and 3 movies.
+3. Copy `<out>/localized/` to `ux0:data/kotor2/`.
+
+Lines with no recording in the pack, such as TSLRCM's restored lines or
+M4-78EP's, play in English.
+
+## Mods
+
+Mobile releases of KOTOR II mods ship as `dlc/mods_<language>/` folders.
+Give each mod its own folder in `ux0:data/kotor2/mods/`:
+
+```text
+ux0:data/kotor2/mods/
+|-- 1_TSLRCM/dlc/mods_english/, mods_french/, ...
+`-- 2_M4-78EP/mm478ep/dlc/mods_english/, mods_russian/
+```
+
+- Folders load in alphabetical order. Where two mods change the same file, the
+  later one wins, in every language. Number the folders to set the order:
+  M4-78EP must come after TSLRCM.
+- A folder can hold the archive as it unpacks: `dlc/mods_<language>/`,
+  `mods_<language>/`, either of those one folder down, or PC-style loose
+  `override/`, `modules/` ... folders, which then apply to every language.
+- Each mod is read from its folder for the chosen language, and from its
+  `mods_english/` for anything that folder does not have. So a mod made for the
+  English game only still works in the other languages, and keeps its priority
+  over the translated files of the mods before it. M4-78EP's readme says it
+  needs the English game; on the Vita its new content is in English and the rest
+  of the game in your language.
+- Mods are on unless you turn them off in the menu's MODS screen; the ones you
+  turn off are listed in `mods/disabled.txt`. With every mod off you play the
+  stock game.
+- Saves are shared between setups. A save made with a mod may not load
+  properly without it.
+- When a mod's talk table and the language's do not match, the loader writes
+  the one the game reads into `cache/lang/<language>/` on the next launch.
+
+The layout used before, with all the mods merged into `ux0:data/kotor2/dlc/`,
+still works: it shows in the menu as **DLC FOLDER (OLD LAYOUT)**. To play in a
+language other than English with an English-only mod, split it into `mods/`.
+
+Tested together: TSLRCM and the M4-78 Enhancement Project, mobile releases, in
+English and French.
 
 ## Controls
 
@@ -301,6 +409,7 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Permanent black screen before shaders | Confirm `ur0:data/libshacccg.suprx` exists. |
 | Black screen on a cache-enabled warm launch | Remove `ux0:data/shader_cache/KOTR00002/` and relaunch so the cache is rebuilt. If it repeats, use a cache-disabled recovery build and report `log.txt`. |
 | Missing game data | Confirm all five libraries, both exactly named OBB files, and the APK `assets/` directory exist under `ux0:data/kotor2/`. |
+| Wrong language, or a mod missing | Hold L while the game starts and check the menu. `log.txt` lists the mods found and each layer used (`[mods]`) and the language (`[lang]`). |
 | Looks frozen | Check the end of `log.txt`. The crash handler parks the process after writing a `[CRASH]` block. |
 | Rendering problems you suspect the GL worker of | Create `ux0:data/kotor2/glw_mode.txt` containing `0` and relaunch. vitaGL then runs on the game thread, as in v0.2.0. Delete the file to turn the worker back on. |
 | Texture problems you suspect the native DXT path of | Create `ux0:data/kotor2/dxt_mode.txt` containing `0` and relaunch. DXT textures are then decoded on the CPU, as in v0.3.0. Delete the file to turn the native path back on. |
