@@ -229,8 +229,9 @@ Keep the OBB names exactly as above: the loader looks for those names.
 5. Copy the APK's `assets/` directory, preserving its contents and structure.
    The tested release includes `AVConfig.json`, `iosdialog.otf`, and
    `supplierconfig.json`.
-6. Optionally add mods to `mods/`, one folder each (see [Mods](#mods)), and a
-   voice pack to `localized/` (see [Voice packs](#voice-packs)).
+6. Optionally add mods to `mods/`, one folder each (see [Mods](#mods)), and
+   voices in another language to `localized/` (see
+   [Adding voices from a PC copy](#adding-voices-from-a-pc-copy)).
 
 The tested result is:
 
@@ -264,72 +265,97 @@ is still black after several minutes, exit and inspect `ux0:data/kotor2/log.txt`
 
 ## Language
 
-The game ships its text in five languages. On Android it follows the phone's
-language; on the Vita a menu asks before the game starts:
+The game ships its text in English, French, German, Italian and Spanish, and
+its voices in English. On Android it follows the phone's language; on the Vita
+you choose it in a menu shown before the game starts:
 
 ```text
                               KOTOR II
 
-                    > LANGUAGE:  ENGLISH
-                      MODS:  1_TSLRCM, 2_M4-78EP
-                      START
+               LANGUAGE                            FRANÇAIS
+               MODS                    1_TSLRCM, 2_M4-78EP
+                                START
 ```
 
-It opens on the first launch, whenever you **hold L while the game starts**
-(any time until the loading screen appears), and when you press **MODS** in the
-main menu (the Android release's Google Play button), which restarts the game
-into it. Up and down move; the console's confirm button selects; the other
-button goes back. START saves the choice, and going back from this screen keeps
-what was saved. The choice is written to `ux0:data/kotor2/swkotor2.ini`, where
-you can also set it by hand:
+### Switching language
+
+1. **Open the menu.** It opens by itself on the first launch. After that, either
+   hold **L** while the game starts (any time from launching it until the
+   loading screen appears), or press **MODS** in the main menu, which restarts
+   the game into the menu.
+2. Select **LANGUAGE**. Up and down move; the console's confirm button selects;
+   the other button goes back.
+3. Pick a language. The right-hand column says what it has: **TEXT + VOICES**
+   (English, and any language with a [voice pack](#adding-voices-from-a-pc-copy)
+   on the card) or **TEXT** (English voices). The list is worked out at each
+   start from what is on the card.
+4. Back on the first screen, select **START**. The choice is saved; going back
+   from that screen instead starts with what was saved before.
+
+The first start in a new language can take a few seconds longer while the
+loader prepares that language's talk table for the mods (it is kept in
+`ux0:data/kotor2/cache/lang/`). Saves work in every language.
+
+The choice is kept in `ux0:data/kotor2/swkotor2.ini`, where you can also set
+it by hand: `en`, `fr`, `de`, `it` or `es`.
 
 ```ini
 [Game Options]
 Language=fr
 ```
 
-`en`, `fr`, `de`, `it` and `es` are the game's own languages. Voices are English
-unless a [voice pack](#voice-packs) is on the card; the list marks languages
-that have one with **+ VOICES**.
-
-Two more kinds of language show in the list, and run on top of the English game:
+Two more kinds of language can show in the list. They run on top of the English
+game:
 
 - **Fan translations:** a folder in `ux0:data/kotor2/translations/` holding a
-  `dialog.tlk`, plus anything else the translation changes laid out as a
+  `dialog.tlk`, plus anything else the translation changes laid out like a
   `mods_<language>` folder (`override/`, `lips/` ...). The folder name is the
-  list entry. It is saved as `Translation=<folder>`.
-- **Languages a mod brings with its own talk table:** TSLRCM's `mods_russian`,
-  for example, which also ships the Cyrillic fonts.
+  list entry, saved as `Translation=<folder>`.
+- **Languages a mod brings with its own talk table**, such as TSLRCM's
+  `mods_russian`, which also ships Cyrillic fonts.
 
-Text a mod has only in English (M4-78EP's, for example) shows in English in the
-other languages instead of blank lines.
+### Adding voices from a PC copy
 
-### Voice packs
+The engine looks for every voice line, lip-sync file and voiced movie under
+`ux0:data/kotor2/localized/<language>/` before the English one in the OBB, file
+by file. A PC copy of KOTOR II dubbed in that language has those files; the
+French PC release is fully voiced. The engine has voice slots for French,
+German, Italian and Spanish only.
 
-The Android release has English voices only, but the engine looks for every
-voice line, lip-sync file and voiced movie under
-`ux0:data/kotor2/localized/<language>/` first, and plays the English one when
-it is not there. A PC copy of KOTOR II in French, German, Italian or Spanish has
-those files. To make a pack from one:
+You need the PC game in that language, a computer with Python 3, this
+repository, and the patch OBB from your Android copy
+(`patch.14.com.aspyr.swkotorii.obb`). A French pack is 720 MB in 16,210 files.
 
-1. On the PC, zip the game folder's `StreamVoice`, `lips`, `StreamSounds` and
-   `Movies` folders. On Steam, set the game's language first (Properties,
-   General, Language) so the files are that language's.
-2. On a computer with Python 3, from this repository:
+1. **Put the PC game in that language.** On Steam: Library, right-click
+   *STAR WARS Knights of the Old Republic II*, Properties, General, Language.
+   Steam downloads that language's files. A clean install is best: mods
+   installed on the PC can leave English files in its folders.
+2. **Copy four folders** from the game folder (on Steam,
+   `C:\Program Files (x86)\Steam\steamapps\common\Knights of the Old Republic II\`):
+   `StreamVoice`, `lips`, `StreamSounds` and `Movies`. A zip of them works too.
+   You can switch Steam back to your usual language afterwards.
+3. **Make the pack:**
 
    ```text
-   python3 tools/voicepack.py <the zip or the game folder> <patch.14.com.aspyr.swkotorii.obb> french <out>
+   python3 tools/voicepack.py <the zip or folder> <patch.14.com.aspyr.swkotorii.obb> french <out>
    ```
 
-   The language is `french`, `german`, `italian` or `spanish`. The script
-   copies only the files the Android game keeps per language, leaves out the
-   ones identical to English, and checks every audio file's format. A French
-   copy gives 15,815 voice lines (567 MB), 75 lip-sync files, 317 combat barks
-   and 3 movies.
-3. Copy `<out>/localized/` to `ux0:data/kotor2/`.
+   The language is `french`, `german`, `italian` or `spanish`. The script takes
+   only the files the Android game keeps per language: voice lines, lip sync,
+   combat barks and the voiced movies (`kremov01`, `scnmov01`, `trailer`; the
+   OBB already has a French `permov01`). It leaves out files identical to the
+   English ones, as the game plays those anyway, and checks every audio file's
+   format. It prints what it copied: from a French copy, 15,815 voice lines,
+   75 lip-sync files, 317 barks and 3 movies. A PC language without its own
+   voice-over gives an almost empty pack.
+4. **Copy `<out>/localized/<language>/` to `ux0:data/kotor2/localized/<language>/`**
+   with VitaShell. Over FTP the many small files take 10 to 20 minutes for
+   French, depending on the FTP client; copying a zip of the folder and
+   extracting it on the Vita with VitaShell avoids the per-file wait.
+5. Start the game: the language now says **TEXT + VOICES**. Choose it.
 
-Lines with no recording in the pack, such as TSLRCM's restored lines or
-M4-78EP's, play in English.
+Lines a pack does not have play in English. That includes every line mods add
+(see [Mods and languages](#mods-and-languages)).
 
 ## Mods
 
@@ -347,28 +373,50 @@ ux0:data/kotor2/mods/
   M4-78EP must come after TSLRCM.
 - A folder can hold the mod as `dlc/mods_<language>/` or `mods_<language>/`,
   or as PC-style loose `override/`, `modules/` ... folders, which then apply to
-  every language. Don't add a folder level: the Vita cannot create a file more
-  than 10 folders below `ux0:`, and a voice line already sits that deep in
+  every language. Copy only the languages you play.
+- Don't add a folder level. The Vita cannot create a file more than 10 folders
+  below `ux0:`, and a voice line already sits that deep in
   `mods/1_TSLRCM/dlc/mods_english/streamvoice/gbl/kreia/`. M4-78EP's archive
   unpacks as `mm478ep/dlc/`: copy its `dlc/` folder, not `mm478ep/`. The log
   warns (`[mods]`) about a mod that nests too deep.
-- Each mod is read from its folder for the chosen language, and from its
-  `mods_english/` for anything that folder does not have. So a mod made for the
-  English game only still works in the other languages, and keeps its priority
-  over the translated files of the mods before it. M4-78EP's readme says it
-  needs the English game; on the Vita its new content is in English and the rest
-  of the game in your language.
-- Mods are on unless you turn them off in the menu's MODS screen; the ones you
-  turn off are listed in `mods/disabled.txt`. With every mod off you play the
-  stock game.
+- Mods are on unless you turn them off in the menu's **MODS** screen; the ones
+  you turn off are listed in `mods/disabled.txt`. With every mod off you play
+  the stock game.
 - Saves are shared between setups. A save made with a mod may not load
-  properly without it.
-- When a mod's talk table and the language's do not match, the loader writes
-  the one the game reads into `cache/lang/<language>/` on the next launch.
+  properly without it. Start a new game after adding a mod that changes the
+  story, as on PC.
 
 The layout used before, with all the mods merged into `ux0:data/kotor2/dlc/`,
-still works: it shows in the menu as **DLC FOLDER (OLD LAYOUT)**. To play in a
-language other than English with an English-only mod, split it into `mods/`.
+still works: it shows in the menu as **DLC FOLDER (OLD LAYOUT)**. To play an
+English-only mod in another language, split it into `mods/`.
+
+### Mods and languages
+
+Each mod is read from its folder for the chosen language, and from its
+`mods_english/` for anything that folder lacks. What that gives, with TSLRCM and
+M4-78EP in French as the example:
+
+- **A mod translated into your language** shows its text in your language:
+  TSLRCM's French folder is French throughout. Entries a mod adds to the talk
+  table only in English show in English (TSLRCM: 46, the HK factory quest's
+  journal and a few item descriptions).
+- **A mod made only in English** still works: M4-78EP keeps its priority over
+  TSLRCM's translated files, so its quests and its planet are there. Its own
+  text is English (8,362 lines), shown instead of blank lines. In the files it
+  changes, its English version is the one used: in French that is 21 files
+  TSLRCM translated, among them the Dantooine enclave module where the Jedi
+  masters wait (`650dan`), where TSLRCM's restored lines then show in English. The original game's lines in
+  those files stay in your language.
+- **Voices that mods add are English**, in every language: they were never
+  dubbed. A voice pack only covers the original game's lines.
+- **A mod's own copy of a voice line or lip-sync file wins over a voice pack.**
+  TSLRCM replaces 4 voice lines with its English versions, and the lip sync of
+  9 areas (Peragus, Nar Shaddaa, Dantooine and others); M4-78EP replaces
+  Korriban's lip sync (`703kor`). In those areas lips follow the English
+  timing.
+- **One talk table per language.** If two mods ship a complete talk table for
+  the same language, the later one replaces the other, as merging them did.
+- A mod with no folder for your language and no `mods_english/` is not used.
 
 Tested together: TSLRCM and the M4-78 Enhancement Project, mobile releases, in
 English and French.
