@@ -48,6 +48,7 @@
 #include "obb_index.h"
 #include "bigalloc.h"
 #include "loadscreen.h"
+#include "modstack.h"
 #include "audio_patch.h"
 #include "sdl_patch.h"
 #include "gl_patch.h"
@@ -652,14 +653,42 @@ static int sysinfo_vita(struct sysinfo_bionic *si) {
   return 0;
 }
 
+/* `path` as the card path newlib would open: a relative one against the working
+ * directory, "ux0:/data" read as "ux0:data". NULL if it cannot say. */
+static const char *card_path(const char *path, char *abs, size_t sz) {
+  const char *ap = path;
+  char tmp[512];
+  if (!strchr(path, ':') && path[0] != '/') {
+    char cwd[256];
+    if (!getcwd(cwd, sizeof cwd)) return NULL;
+    size_t cl = strlen(cwd);
+    snprintf(tmp, sizeof tmp, "%s%s%s", cwd, (cl && cwd[cl - 1] == '/') ? "" : "/", path);
+    ap = tmp;
+  }
+  if (!strncmp(ap, "ux0:/", 5)) snprintf(abs, sz, "ux0:%s", ap + 5);
+  else snprintf(abs, sz, "%s", ap);
+  return abs;
+}
+
 static FILE *fopen_diag(const char *path, const char *mode) {
   autotest_note_open(path);
   if (share_this(path, mode)) {
     FILE *v = fopen_shared(path, mode);
     if (v) return v;                     /* fall through to a real open on failure */
   }
+  /* The mods overlay (modstack.c): dlc/ is the chosen mods, and a few files
+   * are served from elsewhere. Read-only opens only; before the RAM copy of
+   * the talk table, which keys on the file it is handed. */
+  char vpath[512];
+  const char *open_path = path;
+  if (path && mode && mode[0] == 'r' && !strchr(mode, '+')) {
+    char abs[512];
+    int ms = card_path(path, abs, sizeof abs) ? modstack_resolve(abs, vpath, sizeof vpath) : MS_PASS;
+    if (ms == MS_ABSENT || ms == MS_VDIR) { errno = ENOENT; return NULL; }
+    if (ms == MS_FILE) open_path = vpath;
+  }
   /* The talk table: a stream over a RAM copy (ramfile.c). */
-  FILE *rf = ramfile_open(path, mode);
+  FILE *rf = ramfile_open(open_path, mode);
   if (rf) {
     if (++g_files_open > g_files_peak) g_files_peak = g_files_open;
     io_track_add(rf, path);
@@ -676,7 +705,6 @@ static FILE *fopen_diag(const char *path, const char *mode) {
    * Materialize the known-good OBB member once and redirect only this read-only
    * bare-name open. sdl_load_file reaches the already-mounted patch/main OBBs;
    * sceIo is used for the cache write to avoid recursing through this wrapper. */
-  const char *open_path = path;
   if (path && mode && mode[0] == 'r' && !strchr(mode, '+') &&
       (!strcmp(path, "saveload_p.gui") || !strcmp(path, "./saveload_p.gui"))) {
     static const char cache[] = DATA_PATH "/saveload_mobile.gui";
@@ -706,23 +734,7 @@ static FILE *fopen_diag(const char *path, const char *mode) {
    * resolves against its working directory: so does this check. */
   if (open_path) {
     char abs[512];
-    const char *ap = open_path;
-    if (!strchr(open_path, ':') && open_path[0] != '/') {
-      char cwd[256];
-      if (getcwd(cwd, sizeof cwd)) {
-        size_t cl = strlen(cwd);
-        snprintf(abs, sizeof abs, "%s%s%s", cwd, (cl && cwd[cl - 1] == '/') ? "" : "/", open_path);
-        ap = abs;
-      } else {
-        ap = NULL;
-      }
-    }
-    if (ap && !strncmp(ap, "ux0:/", 5)) {            /* "ux0:/data" names "ux0:data" */
-      char norm[512];
-      snprintf(norm, sizeof norm, "ux0:%s", ap + 5);
-      snprintf(abs, sizeof abs, "%s", norm);
-      ap = abs;
-    }
+    const char *ap = card_path(open_path, abs, sizeof abs);
     if (ap && !strncmp(ap, "ux0:", 4)) {
       if (mode && mode[0] == 'r' && !strchr(mode, '+')) {
         if (fs_known_missing(ap)) { errno = ENOENT; return NULL; }
@@ -1067,6 +1079,15 @@ static int FT_New_Face_t(void *lib, const char *path, long idx, void *face) {
   const char *slash = path ? strrchr(path, '/') : NULL;
   const char *base  = slash ? slash + 1 : path;
 
+  /* A mod's own font first (TSLRCM's Russian ships a Cyrillic iosdialog.otf). */
+  if (base) {
+    char rel[300];
+    snprintf(rel, sizeof rel, "override/%s", base);
+    if (modstack_find(rel, cand, sizeof cand) && FT_New_Face(lib, cand, idx, face) == 0) {
+      log_printf("[FT] New_Face(\"%s\" -> %s) -> 0 (mods)", path, cand);
+      return 0;
+    }
+  }
   if (base) {
     snprintf(cand, sizeof cand, "app0:fonts/%s", base);
     int r = FT_New_Face(lib, cand, idx, face);

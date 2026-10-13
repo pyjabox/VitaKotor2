@@ -21,6 +21,7 @@
 #include <string.h>
 #include <strings.h>
 #include <dirent.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -28,6 +29,7 @@
 #include "main.h"
 #include "loadscreen.h"
 #include "fs_patch.h"
+#include "modstack.h"
 #include "so_util.h"
 #include "log.h"
 
@@ -218,11 +220,16 @@ unsigned fs_miss_answered(void) { return 0; }
 #endif
 
 // ---- posix file/dir ops (translate + log + forward to newlib/sceIo) --------
+// The mods overlay (modstack.c) answers first for dlc/ and for the files it
+// serves: before the miss cache, which would otherwise call a virtual name
+// missing because the real dlc/ folder does not hold it.
 static int fs_access(const char *path, int mode) {
-  char t[512];
+  char t[512], v[512];
   fs_translate(path, t, sizeof(t));
-  if (fs_known_missing(t)) return -1;
-  int r = access(t, mode);
+  int ms = modstack_resolve(t, v, sizeof(v));
+  if (ms == MS_ABSENT) { errno = ENOENT; return -1; }
+  if (ms == MS_PASS && fs_known_missing(t)) return -1;
+  int r = access(ms == MS_PASS ? t : v, mode);
   if (r != 0) log_printf("[FS] access MISS: %s", t);
   return r;
 }
@@ -233,12 +240,24 @@ static int fs_chdir(const char *path) {
   log_printf("[FS] chdir %s -> %d", t, r);
   return r;
 }
+/* What opendir hands the game: a real folder, or a folder of the mods
+ * overlay listed from its index. */
+typedef struct { DIR *real; void *view; } FsDir;
+
 static DIR *fs_opendir(const char *path) {
-  char t[512];
+  char t[512], v[512];
   fs_translate(path, t, sizeof(t));
-  DIR *d = opendir(t);
-  if (!d) log_printf("[FS] opendir MISS: %s", t);
-  return d;
+  FsDir *fd = calloc(1, sizeof *fd);
+  if (!fd) return NULL;
+  int ms = modstack_resolve(t, v, sizeof(v));
+  if (ms == MS_VDIR) fd->view = modstack_opendir(t);
+  else if (ms != MS_ABSENT) fd->real = opendir(ms == MS_FILE ? v : t);
+  if (!fd->real && !fd->view) {
+    free(fd);
+    log_printf("[FS] opendir MISS: %s", t);
+    return NULL;
+  }
+  return (DIR *)fd;
 }
 // stat()/fstat() for the Android libraries: VitaSDK's newlib fills its own
 // 40-byte struct stat (st_mode at +4, st_size at +16), while every caller in
@@ -313,7 +332,10 @@ static int fs_stat(const char *path, void *out) {
   char t[512];
   loadscreen_tick();      /* the boot's folder scans stat for seconds without a read */
   fs_translate_ex(path, t, sizeof(t), 0);
-  if (fs_known_missing(t)) return -1;
+  char v[512];
+  int ms = modstack_resolve(t, v, sizeof(v));
+  if (ms == MS_ABSENT) { errno = ENOENT; return -1; }
+  if (ms == MS_PASS && fs_known_missing(t)) return -1;
 
   uintptr_t caller = (uintptr_t)__builtin_return_address(0) & ~(uintptr_t)1;
   uintptr_t caller_off = kotor_mod.text_base ? caller - kotor_mod.text_base : 0;
@@ -321,7 +343,7 @@ static int fs_stat(const char *path, void *out) {
                      caller_off == 0x59d780u;
 
   struct stat native_st;
-  int r = stat(t, &native_st);
+  int r = stat(ms == MS_PASS ? t : v, &native_st);
   if (r == 0) {
     if (out) bionic_stat_from(out, &native_st);
   } else if (is_save_list) {
@@ -391,19 +413,36 @@ static struct bionic_dirent g_bdirent;   // readdir's return is caller-borrowed
 static unsigned g_readdir_n = 0;
 
 static void *fs_readdir(DIR *d) {
-  struct dirent *e = readdir(d);
-  if (!e) return NULL;
+  FsDir *fd = (FsDir *)d;
+  const char *name;
+  int dir = 0;
+  if (fd->view) {
+    name = modstack_readdir(fd->view, &dir);
+  } else {
+    struct dirent *e = readdir(fd->real);
+    name = e ? e->d_name : NULL;
+    dir = e && SCE_S_ISDIR(e->d_stat.st_mode);
+  }
+  if (!name) return NULL;
   memset(&g_bdirent, 0, sizeof g_bdirent);
   g_bdirent.d_ino    = ++g_readdir_n;          // some callers skip ino == 0
   g_bdirent.d_reclen = (uint16_t)sizeof g_bdirent;
-  g_bdirent.d_type   = SCE_S_ISDIR(e->d_stat.st_mode) ? BIONIC_DT_DIR : BIONIC_DT_REG;
-  snprintf(g_bdirent.d_name, sizeof g_bdirent.d_name, "%s", e->d_name);
+  g_bdirent.d_type   = dir ? BIONIC_DT_DIR : BIONIC_DT_REG;
+  snprintf(g_bdirent.d_name, sizeof g_bdirent.d_name, "%s", name);
   if (g_readdir_n <= 64)
     log_printf("[FS] readdir -> \"%s\" type=%u  [#%u]", g_bdirent.d_name,
                g_bdirent.d_type, g_readdir_n);
   return &g_bdirent;
 }
-static int fs_closedir(DIR *d)           { return closedir(d); }
+static int fs_closedir(DIR *d) {
+  FsDir *fd = (FsDir *)d;
+  int r = 0;
+  if (!fd) return -1;
+  if (fd->view) modstack_closedir(fd->view);
+  if (fd->real) r = closedir(fd->real);
+  free(fd);
+  return r;
+}
 static int fs_unlink(const char *path) {
   char t[512];
   fs_translate(path, t, sizeof(t));

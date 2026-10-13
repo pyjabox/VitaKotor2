@@ -40,6 +40,10 @@
 #include "room_dist.h"
 #include "frame_pace.h"
 #include "ini_defaults.h"
+#include "lang.h"
+#include "modstack.h"
+#include "bootmenu.h"
+#include "locstr_fallback.h"
 #include "crash.h"
 #include "heap.h"
 #include "bigalloc.h"
@@ -4660,6 +4664,12 @@ static void *game_main_thread(void *arg) {
 
   ensure_writable_dirs();
 
+  /* Language and mods: asked here if need be (bootmenu.c), then the mods are
+   * laid out for that language before the game opens a file. */
+  bootmenu_run();
+  modstack_build(lang_tag(), lang_engine_folder(), lang_translation_dir());
+  locstr_fallback_install(lang_engine_id());
+
   /* The game's own loading screen until its first GL call; warm when the
    * archive replay index is there (obb_index.c). */
   {
@@ -4681,6 +4691,7 @@ int main(int argc, char *argv[]) {
   sceKernelChangeThreadCpuAffinityMask(0, 0x40000);
 
   sceCtrlSetSamplingModeExt(SCE_CTRL_MODE_ANALOG_WIDE);
+  bootmenu_watch_begin();  // L held from here until the menu would open: it opens
   input_early_init();  // front touch on (touch_mode.txt), rear panel never
 
   gl_worker_init();   // before anything initialises vitaGL (GL_WORKER_MODE)
@@ -4736,6 +4747,11 @@ int main(int argc, char *argv[]) {
   // the pool rather than carving up newlib's arena (log145).
   bigalloc_init();
 
+  // The mods on the card and the saved language: getCurrentLanguage answers
+  // from lang.c, and the boot menu may still change both.
+  modstack_scan();
+  lang_init();
+
   jni_setup();
 
   patch_saveload_optional_control();
@@ -4759,6 +4775,9 @@ int main(int argc, char *argv[]) {
 
   // Keep movies out of the initial boot path until KOTOR II reaches a stable UI.
   bink_patch(&kotor_mod);
+
+  // The main menu's Google Play button opens the boot menu (bootmenu.c).
+  bootmenu_install_button();
 
   uintptr_t disk_space = so_symbol(&kotor_mod, "_Z24ASLPlat_GetDiskSpaceLeftv");
   if (!disk_space)

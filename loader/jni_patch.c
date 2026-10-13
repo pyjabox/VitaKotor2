@@ -32,6 +32,7 @@
 #include "main.h"
 #include "config.h"
 #include "jni_patch.h"
+#include "lang.h"
 #include "so_util.h"
 #include "log.h"
 
@@ -166,6 +167,9 @@ static int CallStaticIntMethodV(void *env, void *cls, void *mid, va_list a) {
   int r = 0;
   if (!strcmp(n, "GetScreenWidthPixel"))       r = 960;
   else if (!strcmp(n, "GetScreenHeightPixel")) r = 544;
+  // The device language on Android; here the one chosen in the boot menu
+  // (lang.c). 0 English, 1 French, 2 German, 3 Italian, 4 Spanish.
+  else if (!strcmp(n, "getCurrentLanguage"))   r = lang_engine_id();
   LOG_JNI("CallStaticIntMethod(id=%s) -> %d", n, r);
   return r;
 }

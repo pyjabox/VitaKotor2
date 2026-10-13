@@ -71,6 +71,12 @@ add_executable(KOTOR2
   loader/gl_state_filter.c
   loader/ai_budget.c
   loader/ini_defaults.c
+  loader/ini.c
+  loader/lang.c
+  loader/modstack.c
+  loader/locstr_fallback.c
+  loader/bootui.c
+  loader/bootmenu.c
   loader/dxt_native.c
   loader/minimp3_impl.c
   loader/mip_gpu.c

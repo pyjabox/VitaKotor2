@@ -11,15 +11,14 @@
 #include "log.h"
 #include "k2res.h"
 #include "ls_text.h"
-#include "gl_worker.h"
-#include "gl_state_filter.h"
+#include "bootui.h"
+#include "modstack.h"
 
 #if LOADSCREEN_ENABLE
 
 #define TIM_PATH    DATA_PATH "/startup.tim"
 #define TIM_MAGIC   0x324D4954u    /* "TIM2": us from begin to the freeze */
 #define FONT_PATH   DATA_PATH "/assets/iosdialog.otf"
-#define DLC_TLK     DATA_PATH "/dlc/mods_english/dialog.tlk"
 #define STR_LOADING 42493          /* LBL_LOADING's STRREF */
 #define RES_TPC     3007
 #define RES_2DA     2017
@@ -59,8 +58,6 @@ enum { T_ART, T_LOGO, T_CORNER, T_EDGE, T_FILL, T_BAR, T_LOADING, T_HINT, T_N };
 static const char *const kNamed[T_N] = {NULL, "kotor2logo", "uibit_brdr_16bct", "uibit_brdr_16bet",
                                         "uibit_fill_2bt", "uibit_fill_16g", NULL, NULL};
 
-/* GL thread only. */
-static GLuint g_tex[T_N];
 /* Game thread. */
 static int g_tw[T_N], g_th[T_N];
 static unsigned g_have;            /* bit per texture that was uploaded */
@@ -78,117 +75,11 @@ static const char *const kColdTip =
     "First launch after installing or copying the game data is slower: the archive index is being "
     "built. Later launches skip it.";
 
-/* ---- GL thread ------------------------------------------------------------------ */
-
-static void gl_upload(const uint32_t *a, const void *rgba) {
-  uint32_t slot = a[0];
-  if (g_tex[slot]) glDeleteTextures(1, &g_tex[slot]);
-  glGenTextures(1, &g_tex[slot]);
-  glBindTexture(GL_TEXTURE_2D, g_tex[slot]);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)a[1], (GLsizei)a[2], 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-  glBindTexture(GL_TEXTURE_2D, 0);
-}
-
-static void gl_free(const uint32_t *a, const void *data) {
-  (void)a;
-  (void)data;
-  for (int i = 0; i < T_N; i++)
-    if (g_tex[i]) { glDeleteTextures(1, &g_tex[i]); g_tex[i] = 0; }
-}
-
-/* Vertex storage per quad of a frame: nothing then depends on whether vitaGL
- * copies client arrays at draw time. */
-#define QUADS 16
-static GLfloat g_pos[QUADS][8], g_uv[QUADS][8];
-static int g_q;
-
-static void quad(int slot, float x, float y, float w, float h, float s0, float t0, float s1, float t1,
-                 const float *rgb, float a) {
-  if (!g_tex[slot] || w <= 0.0f || h <= 0.0f || g_q >= QUADS) return;
-  GLfloat *p = g_pos[g_q], *uv = g_uv[g_q];
-  g_q++;
-  p[0] = x;     p[1] = y;     p[2] = x + w; p[3] = y;
-  p[4] = x + w; p[5] = y + h; p[6] = x;     p[7] = y + h;
-  uv[0] = s0; uv[1] = t0; uv[2] = s1; uv[3] = t0;
-  uv[4] = s1; uv[5] = t1; uv[6] = s0; uv[7] = t1;
-  glBindTexture(GL_TEXTURE_2D, g_tex[slot]);
-  glColor4f(rgb ? rgb[0] : 1.0f, rgb ? rgb[1] : 1.0f, rgb ? rgb[2] : 1.0f, a);
-  glVertexPointer(2, GL_FLOAT, 0, p);
-  glTexCoordPointer(2, GL_FLOAT, 0, uv);
-  glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-}
-
-/* a[0]: progress x 65536; a[1], a[2]: the two text images' sizes, w << 16 | h. */
-static void gl_frame(const uint32_t *a, const void *data) {
-  (void)data;
-  float frac = (float)a[0] / 65536.0f;
-  float lw = (float)(a[1] >> 16), lh = (float)(a[1] & 0xffff), hw = (float)(a[2] >> 16), hh = (float)(a[2] & 0xffff);
-  g_q = 0;
-
-  glDisable(GL_SCISSOR_TEST);
-  glDisable(GL_DEPTH_TEST);
-  glDisable(GL_CULL_FACE);
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-  glMatrixMode(GL_PROJECTION);
-  glLoadIdentity();
-  glOrtho(0, SCREEN_W, SCREEN_H, 0, -1, 1);    /* top-down, like the GUI */
-  glMatrixMode(GL_MODELVIEW);
-  glLoadIdentity();
-  glEnable(GL_TEXTURE_2D);
-  glEnableClientState(GL_VERTEX_ARRAY);
-  glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-
-  quad(T_ART, 0, 0, SCREEN_W, SCREEN_H, 0, 0, 1, 1, NULL, 1.0f);
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  quad(T_LOGO, GX(LOGO_X), GY(LOGO_Y), GX(LOGO_W), GY(LOGO_H), 0, 0, 1, 1, NULL, 1.0f);
-
-  /* PB_PROGRESS: the fill texture is cut, not squeezed, as the bar grows. */
-  const float grey[3] = {kBar, kBar, kBar};
-  quad(T_BAR, 0, GY(BAR_Y), SCREEN_W * frac, GY(BAR_H), 0, 0, frac, 1, grey, 1.0f);
-
-  /* LBL_LOADING's border: fill, four mirrored corners, top and bottom edges
-   * (the box is lower than two corners, so there are no side edges). */
-  float bx = GX(BOX_X), by = GY(BOX_Y), bw = GX(BOX_W), bh = GY(BOX_H);
-  float cw = GX(BOX_DIM), ch = GY(BOX_DIM);
-  if (ch > bh * 0.5f) ch = bh * 0.5f;
-  quad(T_FILL, bx + GX(BOX_INNER), by + GY(BOX_INNER), bw - 2 * GX(BOX_INNER), bh - 2 * GY(BOX_INNER), 0, 0, 1, 1,
-       kBox, 1.0f);
-  quad(T_CORNER, bx, by, cw, ch, 0, 0, 1, 1, kBox, 1.0f);
-  quad(T_CORNER, bx + bw - cw, by, cw, ch, 1, 0, 0, 1, kBox, 1.0f);
-  quad(T_CORNER, bx, by + bh - ch, cw, ch, 0, 1, 1, 0, kBox, 1.0f);
-  quad(T_CORNER, bx + bw - cw, by + bh - ch, cw, ch, 1, 1, 0, 0, kBox, 1.0f);
-  quad(T_EDGE, bx + cw, by, bw - 2 * cw, ch, 0, 0, 1, 1, kBox, 1.0f);
-  quad(T_EDGE, bx + cw, by + bh - ch, bw - 2 * cw, ch, 0, 1, 1, 0, kBox, 1.0f);
-  quad(T_LOADING, bx + (bw - lw) * 0.5f, by + (bh - lh) * 0.5f, lw, lh, 0, 0, 1, 1, kText, 1.0f);
-  quad(T_HINT, GX(HINT_X) + (GX(HINT_W) - hw) * 0.5f, GY(HINT_Y) + 6.0f, hw, hh, 0, 0, 1, 1, kText, 1.0f);
-
-  /* Back to the defaults the GL worker's copy of the state assumes. */
-  glDisable(GL_BLEND);
-  glBlendFunc(GL_ONE, GL_ZERO);
-  glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-  glDisableClientState(GL_VERTEX_ARRAY);
-  glBindTexture(GL_TEXTURE_2D, 0);
-  glDisable(GL_TEXTURE_2D);
-  glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-  glMatrixMode(GL_PROJECTION);
-  glLoadIdentity();
-  glMatrixMode(GL_MODELVIEW);
-  vglSwapBuffers(GL_FALSE);
-}
-
 /* ---- game thread ------------------------------------------------------------------ */
 
 static void upload(int slot, uint8_t *rgba, int w, int h) {
   if (!rgba) return;
-  uint32_t a[3] = {(uint32_t)slot, (uint32_t)w, (uint32_t)h};
-  glw_call(gl_upload, a, 3, rgba, (uint32_t)(w * h * 4));
-  free(rgba);
+  bootui_upload(slot, rgba, w, h);
   g_tw[slot] = w;
   g_th[slot] = h;
   g_have |= 1u << slot;
@@ -234,9 +125,13 @@ static void load_tpc(SceUID fd, uint64_t off, uint32_t size, int slot) {
 
 static void text_upload(int slot, const char *s, int px, int max_w, int line_h) {
   int w = 0, h = 0;
-  uint8_t *img = s && *s ? ls_text_image(s, px, max_w, line_h, &w, &h) : NULL;
-  if (img) upload(slot, img, w, h);
-  else g_have &= ~(1u << slot), g_tw[slot] = g_th[slot] = 0;
+  if (bootui_text(slot, s, px, max_w, line_h, &w, &h)) {
+    g_tw[slot] = w;
+    g_th[slot] = h;
+    g_have |= 1u << slot;
+  } else {
+    g_have &= ~(1u << slot), g_tw[slot] = g_th[slot] = 0;
+  }
 }
 
 static unsigned ms_since(uint64_t *t) {
@@ -249,8 +144,12 @@ static unsigned ms_since(uint64_t *t) {
 static void assets_load(void) {
   uint64_t t0 = sceKernelGetProcessTimeWide(), ts = t0;
   unsigned ms_obb, ms_erf, ms_art, ms_gui, ms_hints, ms_font;
+  /* The talk table the game itself will read (modstack.c): a card file, or
+   * the language's table in the patch OBB. */
+  char tlk_path[256] = "", tlk_member[64] = "localized/english/dialog.tlk";
+  int tlk_card = modstack_tlk(tlk_path, sizeof tlk_path, tlk_member, sizeof tlk_member) == 1;
   g_patch_fd = sceIoOpen(OBB_PATCH_PATH, SCE_O_RDONLY, 0);
-  Member pm[] = {{"texturepacks/swpc_tex_gui.erf", 0, 0}, {"localized/english/dialog.tlk", 0, 0}, {NULL, 0, 0}};
+  Member pm[] = {{"texturepacks/swpc_tex_gui.erf", 0, 0}, {tlk_member, 0, 0}, {NULL, 0, 0}};
   if (g_patch_fd >= 0) k2obb_scan(g_patch_fd, member_cb, pm);
   ms_obb = ms_since(&ts);
 
@@ -269,8 +168,7 @@ static void assets_load(void) {
     if (kNamed[i]) load_tpc(g_patch_fd, e.off[i], e.size[i], i);
   ms_gui = ms_since(&ts);
 
-  /* The talk table the game itself uses: the DLC's if present. */
-  g_tlk_fd = sceIoOpen(DLC_TLK, SCE_O_RDONLY, 0);
+  g_tlk_fd = tlk_card ? sceIoOpen(tlk_path, SCE_O_RDONLY, 0) : -1;
   g_tlk_base = 0;
   if (g_tlk_fd < 0 && pm[1].size) { g_tlk_fd = g_patch_fd; g_tlk_base = pm[1].off; }
 
@@ -291,7 +189,11 @@ static void assets_load(void) {
   if (mfd >= 0) sceIoClose(mfd);
   ms_hints = ms_since(&ts);
 
-  int font = ls_text_open(FONT_PATH);
+  /* A language a mod brings may need its own font (TSLRCM's Russian). */
+  char font_path[256];
+  if (!modstack_find("override/iosdialog.otf", font_path, sizeof font_path))
+    snprintf(font_path, sizeof font_path, "%s", FONT_PATH);
+  int font = ls_text_open(font_path);
   if (font) {
     char s[256];
     if (g_tlk_fd < 0 || !k2tlk_get(g_tlk_fd, g_tlk_base, STR_LOADING, s, sizeof s)) snprintf(s, sizeof s, "Loading");
@@ -305,7 +207,7 @@ static void assets_load(void) {
              (unsigned)((sceKernelGetProcessTimeWide() - t0) / 1000), ms_obb, ms_erf, ms_art, ms_gui, ms_hints, ms_font,
              g_art_name[0] ? g_art_name : "none", e.nart, g_have & (1u << T_LOGO) ? "yes" : "no",
              g_have & (1u << T_CORNER) ? "yes" : "no", font ? "yes" : "no", g_nhint,
-             g_tlk_fd < 0 ? "none" : g_tlk_base ? "patch OBB" : "DLC");
+             g_tlk_fd < 0 ? "none" : g_tlk_base ? tlk_member : tlk_path);
 }
 
 /* The hint for this moment: on a cold boot the port's one explanation first,
@@ -323,17 +225,45 @@ static void hint_update(unsigned elapsed_s) {
   text_upload(T_HINT, s, HINT_PX, (int)GX(HINT_W), HINT_LINE);
 }
 
+/* One quad of the frame; `rgb` NULL draws the texture untinted. */
+static void put(BootQuad *q, int *n, int slot, float x, float y, float w, float h, float s0, float t0, float s1,
+                float t1, const float *rgb, int blend) {
+  q[(*n)++] = (BootQuad){slot, x, y, w, h, s0, t0, s1, t1, rgb ? rgb[0] : 1.0f, rgb ? rgb[1] : 1.0f,
+                         rgb ? rgb[2] : 1.0f, 1.0f, blend};
+}
+
 static void draw(float frac) {
   if (frac < 0.0f) frac = 0.0f;
   if (frac > 1.0f) frac = 1.0f;
   hint_update((unsigned)((sceKernelGetProcessTimeWide() - g_t0) / 1000000));
-  uint32_t a[3] = {(uint32_t)(frac * 65536.0f), (uint32_t)g_tw[T_LOADING] << 16 | (uint32_t)g_th[T_LOADING],
-                   (uint32_t)g_tw[T_HINT] << 16 | (uint32_t)g_th[T_HINT]};
-  glw_call(gl_frame, a, 3, NULL, 0);
-  /* One command per frame: without this it waits for a batch to fill, which
-   * held the screen back for seconds on hardware. */
-  glw_publish();
-  gl_state_filter_forget();
+  BootQuad q[16];
+  int n = 0;
+  float lw = (float)g_tw[T_LOADING], lh = (float)g_th[T_LOADING], hw = (float)g_tw[T_HINT], hh = (float)g_th[T_HINT];
+
+  put(q, &n, T_ART, 0, 0, SCREEN_W, SCREEN_H, 0, 0, 1, 1, NULL, 0);
+  put(q, &n, T_LOGO, GX(LOGO_X), GY(LOGO_Y), GX(LOGO_W), GY(LOGO_H), 0, 0, 1, 1, NULL, 1);
+
+  /* PB_PROGRESS: the fill texture is cut, not squeezed, as the bar grows. */
+  const float grey[3] = {kBar, kBar, kBar};
+  put(q, &n, T_BAR, 0, GY(BAR_Y), SCREEN_W * frac, GY(BAR_H), 0, 0, frac, 1, grey, 1);
+
+  /* LBL_LOADING's border: fill, four mirrored corners, top and bottom edges
+   * (the box is lower than two corners, so there are no side edges). */
+  float bx = GX(BOX_X), by = GY(BOX_Y), bw = GX(BOX_W), bh = GY(BOX_H);
+  float cw = GX(BOX_DIM), ch = GY(BOX_DIM);
+  if (ch > bh * 0.5f) ch = bh * 0.5f;
+  put(q, &n, T_FILL, bx + GX(BOX_INNER), by + GY(BOX_INNER), bw - 2 * GX(BOX_INNER), bh - 2 * GY(BOX_INNER), 0, 0,
+      1, 1, kBox, 1);
+  put(q, &n, T_CORNER, bx, by, cw, ch, 0, 0, 1, 1, kBox, 1);
+  put(q, &n, T_CORNER, bx + bw - cw, by, cw, ch, 1, 0, 0, 1, kBox, 1);
+  put(q, &n, T_CORNER, bx, by + bh - ch, cw, ch, 0, 1, 1, 0, kBox, 1);
+  put(q, &n, T_CORNER, bx + bw - cw, by + bh - ch, cw, ch, 1, 1, 0, 0, kBox, 1);
+  put(q, &n, T_EDGE, bx + cw, by, bw - 2 * cw, ch, 0, 0, 1, 1, kBox, 1);
+  put(q, &n, T_EDGE, bx + cw, by + bh - ch, bw - 2 * cw, ch, 0, 1, 1, 0, kBox, 1);
+  put(q, &n, T_LOADING, bx + (bw - lw) * 0.5f, by + (bh - lh) * 0.5f, lw, lh, 0, 0, 1, 1, kText, 1);
+  put(q, &n, T_HINT, GX(HINT_X) + (GX(HINT_W) - hw) * 0.5f, GY(HINT_Y) + 6.0f, hw, hh, 0, 0, 1, 1, kText, 1);
+  static const float black[3] = {0.0f, 0.0f, 0.0f};
+  bootui_frame(q, n, black);
 }
 
 /* ---- timing ---------------------------------------------------------------------- */
@@ -425,9 +355,7 @@ void loadscreen_note_gl(void) {
   g_frozen = 1;
   if (sceKernelGetThreadId() != g_owner) return;
   g_freeze_us = sceKernelGetProcessTimeWide() - g_t0;
-  /* After the last frame in the queue, so it frees nothing still in use;
-   * vitaGL also defers the actual free until the GPU is done with it. */
-  glw_call(gl_free, NULL, 0, NULL, 0);
+  bootui_free();
   ls_text_close();
   if (g_tlk_fd >= 0 && g_tlk_fd != g_patch_fd) sceIoClose(g_tlk_fd);
   if (g_patch_fd >= 0) sceIoClose(g_patch_fd);

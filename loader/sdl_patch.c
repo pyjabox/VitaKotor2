@@ -21,6 +21,7 @@
 #include <stdio.h>
 
 #include "config.h"
+#include "modstack.h"
 #include "sdl_patch.h"
 #include "dynlib.h"   // g_game_threads registry (watchdog sweeps it)
 #include "fs_patch.h"
@@ -443,6 +444,17 @@ static SDL_RWops *SDL_RWFromFile_hook(const char *fname, const char *mode) {
         return brw;
       }
     } else if (is_font_txi_name(base)) {
+      /* A mod's own font metrics go with its own font textures (TSLRCM's
+       * Russian ships Cyrillic ones): the chosen mods' copy first. */
+      char mp[512], rel[300];
+      snprintf(rel, sizeof rel, "override/%s", base);
+      if (modstack_find(rel, mp, sizeof mp)) {
+        SDL_RWops *mrw = SDL_RWFromFile(mp, mode);
+        if (mrw) {
+          log_printf("[SDL] txi from the mods: %s", mp);
+          return mrw;
+        }
+      }
       char ap[256];
       snprintf(ap, sizeof(ap), "app0:fonts/%s", base);
       SDL_RWops *brw = SDL_RWFromFile(ap, mode);
@@ -453,12 +465,17 @@ static SDL_RWops *SDL_RWFromFile_hook(const char *fname, const char *mode) {
     }
   }
 
-  char t[512];
+  char t[512], v[512];
   fs_translate(fname, t, sizeof(t));
   int ro = mode && mode[0] == 'r' && !strchr(mode, '+');
-  SDL_RWops *rw = (ro && fs_known_missing(t)) ? NULL : SDL_RWFromFile(t, mode);
+  /* The mods overlay (modstack.c) first: dlc/ is the chosen mods, and a few
+   * files are served from elsewhere. */
+  int ms = ro ? modstack_resolve(t, v, sizeof(v)) : MS_PASS;
+  SDL_RWops *rw = NULL;
+  if (ms == MS_FILE) rw = SDL_RWFromFile(v, mode);
+  else if (ms == MS_PASS && !(ro && fs_known_missing(t))) rw = SDL_RWFromFile(t, mode);
   if (!ro) fs_miss_forget(t);
-  if (!rw && mode && mode[0] == 'r') {
+  if (!rw && ms == MS_PASS && mode && mode[0] == 'r') {
     // The in-game Load button requests the desktop/base layout by bare name,
     // while the same constructor assumes controls that only exist in Aspyr's
     // mobile override. The main-menu Load path already requests this override
