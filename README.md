@@ -272,7 +272,7 @@ you choose it in a menu shown before the game starts:
 ```text
                               KOTOR II
 
-               LANGUAGE                            FRANÇAIS
+               LANGUAGE                             ENGLISH
                MODS                    1_TSLRCM, 2_M4-78EP
                                 START
 ```
@@ -297,11 +297,11 @@ loader prepares that language's talk table for the mods (it is kept in
 `ux0:data/kotor2/cache/lang/`). Saves work in every language.
 
 The choice is kept in `ux0:data/kotor2/swkotor2.ini`, where you can also set
-it by hand: `en`, `fr`, `de`, `it` or `es`.
+it by hand, with `<code>` one of `en`, `fr`, `de`, `it` or `es`:
 
 ```ini
 [Game Options]
-Language=fr
+Language=<code>
 ```
 
 Two more kinds of language can show in the list. They run on top of the English
@@ -318,13 +318,14 @@ game:
 
 The engine looks for every voice line, lip-sync file and voiced movie under
 `ux0:data/kotor2/localized/<language>/` before the English one in the OBB, file
-by file. A PC copy of KOTOR II dubbed in that language has those files; the
-French PC release is fully voiced. The engine has voice slots for French,
-German, Italian and Spanish only.
+by file. A PC copy of KOTOR II dubbed in that language has those files. The
+engine has voice slots for French, German, Italian and Spanish only, and only
+a PC release that was dubbed in the language has voices to take.
 
 You need the PC game in that language, a computer with Python 3, this
 repository, and the patch OBB from your Android copy
-(`patch.14.com.aspyr.swkotorii.obb`). A French pack is 720 MB in 16,210 files.
+(`patch.14.com.aspyr.swkotorii.obb`). A fully dubbed language makes a pack of
+about 700 MB in some 16,000 files.
 
 1. **Put the PC game in that language.** On Steam: Library, right-click
    *STAR WARS Knights of the Old Republic II*, Properties, General, Language.
@@ -337,21 +338,20 @@ repository, and the patch OBB from your Android copy
 3. **Make the pack:**
 
    ```text
-   python3 tools/voicepack.py <the zip or folder> <patch.14.com.aspyr.swkotorii.obb> french <out>
+   python3 tools/voicepack.py <the zip or folder> <patch.14.com.aspyr.swkotorii.obb> <language> <out>
    ```
 
    The language is `french`, `german`, `italian` or `spanish`. The script takes
    only the files the Android game keeps per language: voice lines, lip sync,
-   combat barks and the voiced movies (`kremov01`, `scnmov01`, `trailer`; the
-   OBB already has a French `permov01`). It leaves out files identical to the
-   English ones, as the game plays those anyway, and checks every audio file's
-   format. It prints what it copied: from a French copy, 15,815 voice lines,
-   75 lip-sync files, 317 barks and 3 movies. A PC language without its own
-   voice-over gives an almost empty pack.
+   combat barks and the voiced movies (`kremov01`, `scnmov01`, `trailer`),
+   except those the OBB already has in that language. It leaves out files
+   identical to the English ones, as the game plays those anyway, and checks
+   every audio file's format. It prints what it copied, per kind of file. A PC
+   language without its own voice-over gives an almost empty pack.
 4. **Copy `<out>/localized/<language>/` to `ux0:data/kotor2/localized/<language>/`**
-   with VitaShell. Over FTP the many small files take 10 to 20 minutes for
-   French, depending on the FTP client; copying a zip of the folder and
-   extracting it on the Vita with VitaShell avoids the per-file wait.
+   with VitaShell. Over FTP the many small files take 10 to 20 minutes,
+   depending on the FTP client; copying a zip of the folder and extracting it
+   on the Vita with VitaShell avoids the per-file wait.
 5. Start the game: the language now says **TEXT + VOICES**. Choose it.
 
 Lines a pack does not have play in English. That includes every line mods add
@@ -364,7 +364,7 @@ Give each mod its own folder in `ux0:data/kotor2/mods/`:
 
 ```text
 ux0:data/kotor2/mods/
-|-- 1_TSLRCM/dlc/mods_english/, mods_french/, ...
+|-- 1_TSLRCM/dlc/mods_english/, mods_<language>/, ...
 `-- 2_M4-78EP/dlc/mods_english/, mods_russian/
 ```
 
@@ -393,19 +393,20 @@ English-only mod in another language, split it into `mods/`.
 ### Mods and languages
 
 Each mod is read from its folder for the chosen language, and from its
-`mods_english/` for anything that folder lacks. What that gives, with TSLRCM and
-M4-78EP in French as the example:
+`mods_english/` for anything that folder lacks. What that gives in a language
+other than English, with TSLRCM (translated into the game's languages) and
+M4-78EP (English only) as the examples:
 
-- **A mod translated into your language** shows its text in your language:
-  TSLRCM's French folder is French throughout. Entries a mod adds to the talk
+- **A mod translated into your language** shows its text in your language,
+  as TSLRCM's translated folders do throughout. Entries a mod adds to the talk
   table only in English show in English (TSLRCM: 46, the HK factory quest's
   journal and a few item descriptions).
 - **A mod made only in English** still works: M4-78EP keeps its priority over
   TSLRCM's translated files, so its quests and its planet are there. Its own
   text is English (8,362 lines), shown instead of blank lines. In the files it
-  changes, its English version is the one used: in French that is 21 files
-  TSLRCM translated, among them the Dantooine enclave module where the Jedi
-  masters wait (`650dan`), where TSLRCM's restored lines then show in English. The original game's lines in
+  changes, its English version is the one used: 21 files that TSLRCM
+  translates, among them the Dantooine enclave module where the Jedi masters
+  wait (`650dan`), where TSLRCM's restored lines then show in English. The original game's lines in
   those files stay in your language.
 - **Voices that mods add are English**, in every language: they were never
   dubbed. A voice pack only covers the original game's lines.
@@ -419,7 +420,7 @@ M4-78EP in French as the example:
 - A mod with no folder for your language and no `mods_english/` is not used.
 
 Tested together: TSLRCM and the M4-78 Enhancement Project, mobile releases, in
-English and French.
+English and in another language with a voice pack.
 
 ## Controls
 
