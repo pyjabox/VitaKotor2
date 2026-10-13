@@ -14,7 +14,7 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.5.1). Core gameplay and the major
+**Playable work in progress (v0.5.2). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
@@ -24,8 +24,10 @@ title from about 34 s to about 24 s, builds loading-screen images 2–6 times
 faster and caps the frame rate at an even 30 FPS. v0.5.0 brings back the front
 touchscreen alongside the buttons and shows the game's own loading screen while
 it boots. v0.5.1 fixes the stock game stopping on the SAVING screen at the end
-of the prologue. Performance tuning and broad playthrough validation remain
-active.**
+of the prologue. v0.5.2 asks which language to play in before the game starts,
+plays the voices of a dubbed PC copy, keeps each mod in its own folder so that
+mods work in every language, and stops party members moonwalking in fights.
+Performance tuning and broad playthrough validation remain active.**
 
 ### Working and validated
 
@@ -50,6 +52,10 @@ active.**
 - Packed VBO offsets preserve correct character skinning and geometry.
 - LiveArea artwork is installed in Vita-compatible formats.
 - Combat no longer freezes for 0.2–0.6 s when attacking (see Performance).
+- The game runs in any of its five languages, chosen in a menu before it
+  starts, with the voices of a dubbed PC copy where one is on the card.
+- TSLRCM and the M4-78 Enhancement Project work together from their own
+  folders, in English and in another language with a voice pack.
 
 ## Performance
 
@@ -160,10 +166,16 @@ What is enabled by default:
     stayed on the SAVING screen
     ([issue #2](https://github.com/pyjabox/VitaKotor2/issues/2)).
 
-- **On main since v0.5.1 (not yet in a release):**
+- **New in v0.5.2:**
   - **No more moonwalking in fights:** the server AI keeps every creature in
     combat updated each frame and limits the rest instead (see above), for
     about the same frame time as the old 3 ms budget.
+  - **Language and mods menu before the game starts** (see [Language](#language)
+    and [Mods](#mods)), opened on the first launch, by holding L at launch, or
+    with the main menu's **MODS** button. Choosing in it costs no frame rate.
+    With TSLRCM and M4-78EP, indexing the mods adds about 1 s to each launch,
+    and the first launch in a new language about 2 s more to build its talk
+    table.
 
 ### Remaining limitations
 
@@ -172,6 +184,7 @@ What is enabled by default:
 | Startup | The screen is black for about 5 s, then shows the loading screen; it stops moving when the game takes over (about 19 s in) and stays up until the legal screen. A cold launch can take roughly two minutes while archives are scanned and shaders compile, and the loading screen can sit still for much of it. Wait before assuming the process has hung. Later launches reach the title in about 24 s; about one launch in three takes about 11 s longer, in the engine's scan of `dlc/` (cause not yet known). |
 | Performance | Heavy scenes remain CPU-bound, mostly in the engine's per-object rendering work: about 19–20 FPS in the busiest tested scenes. A 10 m distance filter can reduce draws further but remains too experimental for releases. See the [performance reference](docs/specs/PERFORMANCE.md). |
 | Visual changes | There are no dynamic shadows: the loader sets the game's own `Shadows=0` (and `Soft Shadows=0`) in `swkotor2.ini` at every launch. The in-game option still works until the next launch. The mobile bloom passes are skipped (no game option controls them). Rooms keep their baked lighting. |
+| Languages | The menu before the game is in English. In a language other than English, mods' additions can be English: see [Mods and languages](#mods-and-languages). |
 | AI updates | Creatures in combat, acting or walking get their AI update every frame. Idle creatures, placeables, doors and items are updated less often (every third frame at most, and the AI outside combat stops after about 3 ms per frame). Nothing was noticed in testing, but idle characters in very crowded scenes may react slightly later. |
 | Audio | Known issue: some sounds can cut in and out. Under investigation. |
 | Latency | The GL worker lets the game run up to one frame ahead of the display. An object stepping out from cover can appear up to three frames late (occlusion culling). |

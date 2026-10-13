@@ -25,7 +25,7 @@ The largest confirmed improvements are:
 12. **GL worker thread (section 5.7):** vitaGL runs on core 2. The game thread records commands instead, at about 4.5 ms per frame instead of about 8 ms. Frame at the busy spot: 61.7–63.7 → 58.5 ms.
 13. **No shadows (section 9.2):** about 4.4 ms and 80 draws per frame in a busy scene. The loader sets the game's own `Shadows=0` in `swkotor2.ini`.
 14. **FMOD update skip (section 5.8):** the game calls `System::update` about 50 times per frame; the loader now scans its channels only when a sound has ended. About 1 ms per frame.
-15. **Server AI (section 5.9):** the AI master spent its full 10 ms budget every frame. A 3 ms budget brought it to 3.4–5.3 ms but delayed creatures in combat ("moonwalk"); since v0.5.1 `ai_throttle.c` limits only what is not in combat: about 5.3 ms in a Dxun fight, against 10.2 ms.
+15. **Server AI (section 5.9):** the AI master spent its full 10 ms budget every frame. A 3 ms budget brought it to 3.4–5.3 ms but delayed creatures in combat ("moonwalk"); since v0.5.2 `ai_throttle.c` limits only what is not in combat: about 5.3 ms in a Dxun fight, against 10.2 ms.
 16. **Release candidate 1, released as v0.3.0 (2026-10-04)**, all of the above on top of item 11:
     - the busy spot runs at 49–53 ms per frame (~19–20 FPS), against ~62 ms before;
     - light scenes (140–155 draws) run at 27–30 ms (34–37 FPS);
@@ -802,8 +802,11 @@ rendering defects.
 | v0.4.2 eboot | `4d6eb9d9b79d57e648b187be592ee904b737577b14b6fb75af6f3648aaf402c3` |
 | v0.5.0 eboot | `a92eec91d207cd508433a30607b6ddad8ea7330ed89f689f27b4feb94859d3c2` |
 | v0.5.1 eboot | `da4d9ed9737de0edf06461cc63a7a524c7218ee39b144e79b70d30a04a6fdbdf` |
+| v0.5.2 eboot | `ee1788b7304af0e45fde9ea470401161e022075b4c6ebee00ee699672cfb1c00` |
 
 ## 15. Current decision
+
+v0.5.2 is v0.5.1 with the server AI throttle of section 5.9 in place of the 3 ms budget (combat at full AI, about the same frame time), and the boot menu for the language and the mods. The menu runs before the loading screen and costs no frame rate; the mods index adds about 1 s to a launch with TSLRCM and M4-78EP (2,783 files and folders, hardware), and a language's talk table is built once, in 2.2 s. Frame rate is as in v0.5.1.
 
 v0.5.1 is v0.5.0 with the loader's stat()/fstat() returning bionic's struct stat for every call (loader/fs_patch.c), which fixes the stock game's hang at the end of the prologue. Boot time and frame rate are as in v0.5.0.
 
