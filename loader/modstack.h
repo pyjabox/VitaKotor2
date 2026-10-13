@@ -43,9 +43,6 @@ void modstack_closedir(void *dir);
 /* A file of the view by its path inside it ("override/iosdialog.otf"). */
 int modstack_find(const char *rel, char *out, int outsz);
 
-/* Answer `path` (a Vita path) with `real`, e.g. a patched GUI layout. */
-void modstack_serve(const char *path, const char *real);
-
 /* The talk table the game will read: 1 and a card path in `path`, 2 and a
  * patch OBB member in `member`. */
 int modstack_tlk(char *path, int psz, char *member, int msz);

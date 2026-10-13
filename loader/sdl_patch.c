@@ -468,8 +468,7 @@ static SDL_RWops *SDL_RWFromFile_hook(const char *fname, const char *mode) {
   char t[512], v[512];
   fs_translate(fname, t, sizeof(t));
   int ro = mode && mode[0] == 'r' && !strchr(mode, '+');
-  /* The mods overlay (modstack.c) first: dlc/ is the chosen mods, and a few
-   * files are served from elsewhere. */
+  /* The mods overlay (modstack.c) first: dlc/ is the chosen mods. */
   int ms = ro ? modstack_resolve(t, v, sizeof(v)) : MS_PASS;
   SDL_RWops *rw = NULL;
   if (ms == MS_FILE) rw = SDL_RWFromFile(v, mode);

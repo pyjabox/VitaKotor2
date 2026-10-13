@@ -18,13 +18,14 @@
  *
  * The MODS button is the main menu's Google Play button
  * (CSWGuiMainMenu::OnGooglePlayButton, which on Android signs in to Play
- * Games). The layout the game loads, override/mainmenua8x6_p.gui, labels it
- * with embedded text, so a copy with "Google Play" shortened in place to
- * "MODS" is served in its place (modstack_serve). The button writes
+ * Games). Its label is not the layout's: CSWGuiMainMenu::LoadFromLayout sets
+ * it in code (0x3ad57e) from a literal, "Google Play" (or Amazon's
+ * "GameCircle"), so that literal is rewritten in place. The button writes
  * mods/menu.flag and restarts the game; nothing is lost, as it only exists on
  * the main menu. */
 
 #include <vitasdk.h>
+#include <kubridge.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,7 +34,6 @@
 #include "bootmenu.h"
 #include "bootui.h"
 #include "config.h"
-#include "k2res.h"
 #include "lang.h"
 #include "log.h"
 #include "ls_text.h"
@@ -43,8 +43,7 @@
 
 #define MENU_FLAG     DATA_PATH "/mods/menu.flag"
 #define FONT_PATH     DATA_PATH "/assets/iosdialog.otf"
-#define GUI_MEMBER    "override/mainmenua8x6_p.gui"
-#define GUI_CACHE     DATA_PATH "/cache/mainmenua8x6_p.gui"
+#define GPLAY_LABEL_OFF 0x72c3f6u    /* "Google Play", read by LoadFromLayout at 0x3ad57e */
 #define L_MASK        (SCE_CTRL_L1 | SCE_CTRL_LTRIGGER)
 #define IDLE_S        60
 #define ROWS_MAX      (MODSTACK_MAX + LANG_MAX + 2)
@@ -412,50 +411,6 @@ static int OnGooglePlayButton_hook(void *self, void *control) {
   return 0;
 }
 
-typedef struct { const char *name; uint64_t off, size; } Member;
-static int member_cb(const char *n, unsigned len, uint64_t off, uint64_t size, void *ctx) {
-  Member *m = ctx;
-  if (strlen(m->name) != len || strncasecmp(n, m->name, len)) return 0;   /* the OBB says mainmenuA8x6_p */
-  m->off = off;
-  m->size = size;
-  return 1;
-}
-
-/* The main menu layout with its Google Play button labelled MODS, cached. */
-static int relabel_layout(void) {
-  SceIoStat st;
-  if (sceIoGetstat(GUI_CACHE, &st) >= 0 && st.st_size > 0) return 1;
-  SceUID fd = sceIoOpen(OBB_MAIN_PATH, SCE_O_RDONLY, 0);
-  Member m = { GUI_MEMBER, 0, 0 };
-  if (fd >= 0) k2obb_scan(fd, member_cb, &m);
-  uint8_t *d = m.size && m.size < 1024 * 1024 ? k2_read(fd, m.off, (uint32_t)m.size) : NULL;
-  if (fd >= 0) sceIoClose(fd);
-  if (!d) {
-    log_printf("[bootmenu] %s not found in the main OBB -- the button keeps its label", GUI_MEMBER);
-    return 0;
-  }
-  /* The label is a CExoString: a 32-bit length, then the text. */
-  static const uint8_t from[] = "\x0b\x00\x00\x00" "Google Play";
-  uint8_t *at = NULL;
-  int count = 0;
-  for (uint32_t i = 0; i + sizeof from - 1 <= m.size; i++)
-    if (!memcmp(d + i, from, sizeof from - 1)) { at = d + i; count++; }
-  int ok = 0;
-  if (memcmp(d, "GUI V3.2", 8) || count != 1) {
-    log_printf("[bootmenu] %s: %d \"Google Play\" labels -- left alone", GUI_MEMBER, count);
-  } else {
-    memcpy(at, "\x04\x00\x00\x00" "MODS", 8);
-    sceIoMkdir(DATA_PATH "/cache", 0777);
-    SceUID o = sceIoOpen(GUI_CACHE ".tmp", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
-    ok = o >= 0 && sceIoWrite(o, d, (SceSize)m.size) == (int)m.size;
-    if (o >= 0) sceIoClose(o);
-    ok = ok && sceIoRename(GUI_CACHE ".tmp", GUI_CACHE) >= 0;
-    if (!ok) sceIoRemove(GUI_CACHE ".tmp");
-  }
-  free(d);
-  return ok;
-}
-
 void bootmenu_install_button(void) {
   uintptr_t f = so_symbol(&kotor_mod, "_ZN14CSWGuiMainMenu18OnGooglePlayButtonEP13CSWGuiControl");
   if (!f) {
@@ -463,8 +418,12 @@ void bootmenu_install_button(void) {
     return;
   }
   hook_thumb(f, (uintptr_t)&OnGooglePlayButton_hook);
-  int relabelled = relabel_layout();
-  if (relabelled) modstack_serve(DATA_PATH "/" GUI_MEMBER, GUI_CACHE);
+  /* The label, set from this literal by LoadFromLayout after the layout has
+   * been read. Only that function uses it. */
+  static const char from[] = "Google Play", to[] = "MODS";
+  char *lit = (char *)(kotor_mod.text_base + GPLAY_LABEL_OFF);
+  int relabelled = !memcmp(lit, from, sizeof from);
+  if (relabelled) kuKernelCpuUnrestrictedMemcpy(lit, to, sizeof to);
   log_printf("[bootmenu] the main menu's Google Play button opens this menu%s",
-             relabelled ? ", labelled MODS" : "");
+             relabelled ? ", labelled MODS" : " (its label is not where expected: left alone)");
 }

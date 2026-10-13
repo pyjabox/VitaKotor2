@@ -52,7 +52,6 @@
 #define CACHE_DIR     DATA_PATH "/cache"
 #define TLK_CACHE     CACHE_DIR "/lang"
 #define SRC_MAX       (MODSTACK_MAX * 2 + 4)
-#define SERVED_MAX    8
 #define TLK_HEAD      20
 #define TLK_ENTRY     40
 
@@ -78,8 +77,6 @@ static uint32_t s_tabn;
 static char s_viewdir[48];          /* "mods_french" */
 static int s_built;
 
-static struct { char from[256], to[256]; int used; } s_served[SERVED_MAX];
-static int s_nserved;
 
 static char s_tlk[320], s_tlk_member[64];
 static int s_tlk_kind;
@@ -692,12 +689,6 @@ int modstack_resolve(const char *path, char *out, int outsz) {
   if (!s_built || !path) return MS_PASS;
   char p[512];
   if (!normalise(path, p, sizeof p)) return MS_PASS;
-  for (int i = 0; i < s_nserved; i++)
-    if (!strcasecmp(p, s_served[i].from)) {
-      snprintf(out, (size_t)outsz, "%s", s_served[i].to);
-      if (!s_served[i].used++) log_printf("[mods] %s served from %s", s_served[i].from, s_served[i].to);
-      return MS_FILE;
-    }
   const char *rest = in_dlc(p);
   if (!rest) return MS_PASS;
   if (!*rest) {
@@ -783,13 +774,6 @@ void modstack_closedir(void *dir) {
   free(v->name);
   free(v->dir);
   free(v);
-}
-
-void modstack_serve(const char *path, const char *real) {
-  if (s_nserved == SERVED_MAX) return;
-  normalise(path, s_served[s_nserved].from, sizeof s_served[0].from);
-  snprintf(s_served[s_nserved].to, sizeof s_served[0].to, "%s", real);
-  s_nserved++;
 }
 
 int modstack_tlk(char *path, int psz, char *member, int msz) {

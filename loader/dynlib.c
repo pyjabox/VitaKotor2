@@ -676,9 +676,9 @@ static FILE *fopen_diag(const char *path, const char *mode) {
     FILE *v = fopen_shared(path, mode);
     if (v) return v;                     /* fall through to a real open on failure */
   }
-  /* The mods overlay (modstack.c): dlc/ is the chosen mods, and a few files
-   * are served from elsewhere. Read-only opens only; before the RAM copy of
-   * the talk table, which keys on the file it is handed. */
+  /* The mods overlay (modstack.c): dlc/ is the chosen mods. Read-only opens
+   * only; before the RAM copy of the talk table, which keys on the file it is
+   * handed. */
   char vpath[512];
   const char *open_path = path;
   if (path && mode && mode[0] == 'r' && !strchr(mode, '+')) {

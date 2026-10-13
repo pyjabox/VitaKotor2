@@ -220,9 +220,9 @@ unsigned fs_miss_answered(void) { return 0; }
 #endif
 
 // ---- posix file/dir ops (translate + log + forward to newlib/sceIo) --------
-// The mods overlay (modstack.c) answers first for dlc/ and for the files it
-// serves: before the miss cache, which would otherwise call a virtual name
-// missing because the real dlc/ folder does not hold it.
+// The mods overlay (modstack.c) answers first for dlc/: before the miss
+// cache, which would otherwise call a virtual name missing because the real
+// dlc/ folder does not hold it.
 static int fs_access(const char *path, int mode) {
   char t[512], v[512];
   fs_translate(path, t, sizeof(t));
