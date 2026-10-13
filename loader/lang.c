@@ -90,6 +90,7 @@ static void list(void) {
     snprintf(l->code, sizeof l->code, "%s", ini_language_code(i));
     l->engine = i;
     l->kind = LANG_OBB;
+    l->voices = i == INI_LANG_EN;          /* the OBB's; the others need a pack */
     if (i != INI_LANG_EN) {
       char p[160];
       snprintf(p, sizeof p, "%s/localized/%s/streamvoice", DATA_PATH, l->tag);
@@ -143,9 +144,10 @@ static void apply(void) {
   const Lang *l = &s_lang[s_cur];
   s_tr_dir[0] = 0;
   if (l->kind == LANG_TRANSLATION) snprintf(s_tr_dir, sizeof s_tr_dir, "%s/%s", TR_DIR, l->code);
-  log_printf("[lang] %s: %s, engine language %d%s", l->label,
+  log_printf("[lang] %s: %s, engine language %d, %s", l->label,
              l->kind == LANG_OBB ? "the game's own" : l->kind == LANG_TRANSLATION ? "fan translation" : "from a mod",
-             l->engine, l->voices ? ", voice pack on the card" : "");
+             l->engine, !l->voices ? "English voices" : l->engine == INI_LANG_EN && l->kind == LANG_OBB ? "voices" :
+             "voice pack on the card");
 }
 
 /* The entry swkotor2.ini's Language and Translation name. */

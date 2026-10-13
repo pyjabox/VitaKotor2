@@ -64,7 +64,10 @@
 #define FOOT_Y    500
 #define FOOT_PX   17
 
-enum { S_TITLE, S_SUB, S_FOOT, S_SOLID, S_MORE, S_ROW0 };
+/* A row is "NAME\tTAG" -- the name on the left of the bar, the tag on its
+ * right -- or a single text, centred. */
+enum { S_TITLE, S_SUB, S_FOOT, S_SOLID, S_MORE, S_ROW0, S_TAG0 = S_ROW0 + VISIBLE };
+#define ROW_PAD 28
 
 /* The loading screen's colours (loadscreen_p.gui). */
 static const float kBg[3] = {0.0f, 0.0f, 0.0f};
@@ -189,6 +192,28 @@ static void centred(BootQuad *q, int *n, int slot, float y, const float *rgb) {
   if (z->w) put(q, n, slot, (SCREEN_W - z->w) * 0.5f, y, (float)z->w, (float)z->h, rgb);
 }
 
+/* Row `i` of the window: its name (or centred text) in S_ROW0 + i, its tag in
+ * S_TAG0 + i. */
+static void row_text(int i, const char *row) {
+  char name[ROW_LEN];
+  const char *tab = strchr(row, '\t');
+  snprintf(name, sizeof name, "%.*s", tab ? (int)(tab - row) : (int)strlen(row), row);
+  text(S_ROW0 + i, name, ROW_PX, tab ? HL_W / 2 : HL_W - 2 * ROW_PAD);
+  int room = HL_W - 3 * ROW_PAD - s_size[S_ROW0 + i].w;
+  text(S_TAG0 + i, tab ? tab + 1 : "", ROW_PX, room > 40 ? room : 40);
+}
+
+static void row_quads(BootQuad *q, int *n, int i, const char *row, float y, int on) {
+  float x0 = (SCREEN_W - HL_W) * 0.5f;
+  Size *name = &s_size[S_ROW0 + i], *tag = &s_size[S_TAG0 + i];
+  if (!strchr(row, '\t')) {
+    centred(q, n, S_ROW0 + i, y, on ? kOn : kOff);
+    return;
+  }
+  if (name->w) put(q, n, S_ROW0 + i, x0 + ROW_PAD, y, (float)name->w, (float)name->h, on ? kOn : kOff);
+  if (tag->w) put(q, n, S_TAG0 + i, x0 + HL_W - ROW_PAD - tag->w, y, (float)tag->w, (float)tag->h, on ? kTitle : kOff);
+}
+
 /* 1: confirmed, *sel the row; 0: cancelled; -1: no input for IDLE_S. */
 static int pick(const Buttons *b, const char *title, const char *sub, char rows[][ROW_LEN], int n, int *sel) {
   if (n <= 0) return 0;
@@ -215,9 +240,7 @@ static int pick(const Buttons *b, const char *title, const char *sub, char rows[
     if (*sel < top) top = *sel;
     if (*sel >= top + VISIBLE) top = *sel - VISIBLE + 1;
     uint64_t t0 = sceKernelGetProcessTimeWide();
-    for (int i = 0; i < VISIBLE; i++)
-      if (top + i < n) text(S_ROW0 + i, rows[top + i], ROW_PX, HL_W - 24);
-      else s_size[S_ROW0 + i].w = 0;
+    for (int i = 0; i < VISIBLE && top + i < n; i++) row_text(i, rows[top + i]);
     unsigned ms = (unsigned)((sceKernelGetProcessTimeWide() - t0) / 1000);
     if (first) {
       log_printf("[bootmenu] \"%s\" up in %u ms (%d rows)", title,
@@ -234,7 +257,7 @@ static int pick(const Buttons *b, const char *title, const char *sub, char rows[
     centred(q, &k, S_TITLE, TITLE_Y, kTitle);
     centred(q, &k, S_SUB, SUB_Y, kOff);
     for (int i = 0; i < VISIBLE && top + i < n; i++)
-      centred(q, &k, S_ROW0 + i, ROWS_Y + i * ROW_STEP, top + i == *sel ? kOn : kOff);
+      row_quads(q, &k, i, rows[top + i], ROWS_Y + i * ROW_STEP, top + i == *sel);
     if (top > 0) centred(q, &k, S_MORE, ROWS_Y - ROW_STEP + 8, kOff);
     if (top + VISIBLE < n) centred(q, &k, S_MORE, ROWS_Y + VISIBLE * ROW_STEP - 8, kOff);
     centred(q, &k, S_FOOT, FOOT_Y, kTitle);
@@ -245,23 +268,29 @@ static int pick(const Buttons *b, const char *title, const char *sub, char rows[
 
 /* ---- the screens ----------------------------------------------------------------- */
 
+/* Every language says what it has: text, and voices where they exist (the
+ * OBB's for English, a voice pack for the others). */
 static void lang_row(char *out, int i) {
   const Lang *l = lang_get(i);
-  snprintf(out, ROW_LEN, "%s%s%s", l->label, l->voices ? "   + VOICES" : "",
-           l->kind == LANG_TRANSLATION ? "   (FAN TRANSLATION)" : l->kind == LANG_MOD ? "   (FROM A MOD)" : "");
+  const char *what = l->kind == LANG_TRANSLATION ? (l->voices ? "FAN TRANSLATION + VOICES" : "FAN TRANSLATION")
+                     : l->kind == LANG_MOD       ? "FROM A MOD"
+                     : l->voices                 ? "TEXT + VOICES"
+                                                 : "TEXT";
+  snprintf(out, ROW_LEN, "%s\t%s", l->label, what);
 }
 
+/* The enabled mods' names while two fit, a count after that. */
 static void mods_summary(char *out, size_t sz) {
-  int n = 0;
+  int on = 0;
+  for (int i = 0; i < modstack_count(); i++) on += modstack_enabled(i);
+  if (!modstack_count()) { snprintf(out, sz, "NONE INSTALLED"); return; }
+  if (!on) { snprintf(out, sz, "NONE (STOCK GAME)"); return; }
+  if (on > 2) { snprintf(out, sz, "%d OF %d ON", on, modstack_count()); return; }
   size_t at = 0;
   out[0] = 0;
-  for (int i = 0; i < modstack_count(); i++) {
-    if (!modstack_enabled(i)) continue;
-    at += (size_t)snprintf(out + at, at < sz ? sz - at : 0, "%s%s", n++ ? ", " : "", modstack_label(i));
-  }
-  if (!modstack_count()) snprintf(out, sz, "NONE INSTALLED");
-  else if (!n) snprintf(out, sz, "NONE (STOCK GAME)");
-  else if (at >= sz && sz > 4) memcpy(out + sz - 4, "...", 4);
+  for (int i = 0, k = 0; i < modstack_count(); i++)
+    if (modstack_enabled(i))
+      at += (size_t)snprintf(out + at, at < sz ? sz - at : 0, "%s%s", k++ ? ", " : "", modstack_label(i));
 }
 
 static char s_rows[ROWS_MAX][ROW_LEN];
@@ -271,7 +300,7 @@ static int language_screen(const Buttons *b, int *lang) {
   int n = lang_count();
   for (int i = 0; i < n; i++) lang_row(s_rows[i], i);
   int sel = *lang;
-  int r = pick(b, "CHOOSE A LANGUAGE", "VOICES: A VOICE PACK IN LOCALIZED/<LANGUAGE>/ ON THE CARD. SEE THE README.",
+  int r = pick(b, "CHOOSE A LANGUAGE", "VOICES OTHER THAN ENGLISH COME FROM A VOICE PACK ON THE CARD (SEE THE README)",
                s_rows, n, &sel);
   if (r == 1) *lang = sel;
   return r;
@@ -281,7 +310,7 @@ static int mods_screen(const Buttons *b) {
   int n = modstack_count(), sel = 0;
   for (;;) {
     for (int i = 0; i < n; i++)
-      snprintf(s_rows[i], ROW_LEN, "%s  %s", modstack_enabled(i) ? "[X]" : "[  ]", modstack_label(i));
+      snprintf(s_rows[i], ROW_LEN, "%s\t%s", modstack_label(i), modstack_enabled(i) ? "ON" : "OFF");
     snprintf(s_rows[n], ROW_LEN, "DONE");
     int r = pick(b, "MODS", "LATER FOLDERS WIN WHERE TWO MODS CHANGE THE SAME FILE. SAVES ARE SHARED BETWEEN SETUPS.",
                  s_rows, n + 1, &sel);
@@ -324,8 +353,8 @@ void bootmenu_run(void) {
   while (!done) {
     char mods[96], hub[3][ROW_LEN];
     mods_summary(mods, sizeof mods);
-    snprintf(hub[0], ROW_LEN, "LANGUAGE:  %s%s", lang_get(lang)->label, lang_get(lang)->voices ? "  + VOICES" : "");
-    snprintf(hub[1], ROW_LEN, "MODS:  %s", mods);
+    snprintf(hub[0], ROW_LEN, "LANGUAGE\t%s", lang_get(lang)->label);
+    snprintf(hub[1], ROW_LEN, "MODS\t%s", mods);
     snprintf(hub[2], ROW_LEN, "START");
     int r = pick(&b, "KOTOR II", "CHANGE THIS LATER: HOLD L WHILE THE GAME STARTS, OR PRESS MODS IN THE MAIN MENU",
                  hub, 3, &sel);

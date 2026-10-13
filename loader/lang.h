@@ -12,7 +12,7 @@ typedef struct {
   char code[32];      /* what swkotor2.ini says: "fr", or the translation's name */
   int engine;         /* getCurrentLanguage: 0 English .. 4 Spanish */
   int kind;
-  int voices;         /* a voice pack on the card */
+  int voices;         /* voices in this language: English's in the OBB, a pack on the card */
 } Lang;
 
 /* Main thread, after modstack_scan(): list the languages, read swkotor2.ini. */
