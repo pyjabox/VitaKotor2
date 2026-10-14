@@ -818,8 +818,11 @@ rendering defects.
 | v0.5.3 eboot | `4a049a7047606a71180cd5c6a926a84de4b1149de1c449834154793870dee82e` |
 | v0.5.4 eboot | `b0b409cecda3f91055e866effc36b4ff2d4ff5bcf552801c0539534c2b7ba3fa` |
 | v0.5.5 eboot | `248252a9c332db4df102d595bc8aa2738125f9bd18966660be772d8b485263bd` |
+| v0.5.6 eboot | `c4351e83529a9ee6c5376c291f6799e047ac3fe0341c7880f8e4c7e6a61e7006` |
 
 ## 15. Current decision
+
+v0.5.6 is v0.5.5 with loose voice lines read into RAM at open (loader/ramfile.c), so the game can no longer hold all 64 of a process's files: in Telos's apartments, with a voice pack, every open failed from 64 held files (58 voice lines). The log keeps its file open, open files are counted (`[fd]`), threads are listed with their core and load (`[cpu]`), and the mixer alternates two output buffers. Core pinning (`THREAD_PINNING`) is off. Frame rate was not measured again.
 
 v0.5.5 is v0.5.4 with a buffer unbound before the game deletes it (loader/gl_patch.c): vitaGL kept a deleted index buffer bound, and the loading screen after the Batu Rem fight on Telos crashed reading through it (issue #4). It also logs late audio output per 10 s window (`[snd-gap]`, issue #5). Frame rate was not measured again: the unbind runs only when a bound buffer is deleted, and the gap check reads the clock twice per 21 ms audio grain.
 

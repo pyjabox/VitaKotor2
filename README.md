@@ -14,7 +14,7 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.5.5). Core gameplay and the major
+**Playable work in progress (v0.5.6). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
@@ -31,7 +31,8 @@ v0.5.3 fixes the frame rate falling to zero on the Harbinger when the stealthed
 Sith assassins appear, and the noise in the reflections of shiny floors.
 v0.5.4 makes scripted doors and objects work again in busy areas, such as the
 airlock in Peragus's dormitories. v0.5.5 fixes the black screen on Telos when
-the apartments load after the fight with Batu Rem.
+the apartments load after the fight with Batu Rem. v0.5.6 fixes rooms that stop
+responding, and saves that come out empty, when a voice pack is installed.
 Performance tuning and broad playthrough validation remain active.**
 
 ### Working and validated
@@ -217,6 +218,17 @@ What is enabled by default:
     the deleted buffer bound, so the loading screen's next draw read its
     indices through it. The loader now unbinds a buffer before the game
     deletes it.
+
+- **New in v0.5.6:**
+  - **Voice packs no longer make the game run out of files:** in Telos's
+    apartments, after the terminal calls and a conversation, the door stayed
+    locked, the bed and the party did nothing, and saving left an empty
+    folder. The game keeps each speaker's last voice line open, and a Vita
+    process may hold 64 files. With a voice pack each line is a file on the
+    memory card, so after enough speakers every open failed. The loader now
+    reads such a line into memory and closes the file at once (about 2 MB for
+    65 held lines in that scene). Voices from the game's archive (English)
+    were never affected.
 
 ### Remaining limitations
 
