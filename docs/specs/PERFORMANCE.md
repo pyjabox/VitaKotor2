@@ -816,10 +816,11 @@ rendering defects.
 | v0.5.1 eboot | `da4d9ed9737de0edf06461cc63a7a524c7218ee39b144e79b70d30a04a6fdbdf` |
 | v0.5.2 eboot | `ee1788b7304af0e45fde9ea470401161e022075b4c6ebee00ee699672cfb1c00` |
 | v0.5.3 eboot | `4a049a7047606a71180cd5c6a926a84de4b1149de1c449834154793870dee82e` |
+| v0.5.4 eboot | `b0b409cecda3f91055e866effc36b4ff2d4ff5bcf552801c0539534c2b7ba3fa` |
 
 ## 15. Current decision
 
-On main after v0.5.3: the server AI throttle without its 3 ms limit (section 5.9). Scripted objects on the lowest AI level work again; busy fights cost about 5 ms more AI per frame than in v0.5.2 and v0.5.3, as in v0.5.1.
+v0.5.4 is v0.5.3 with the server AI throttle without its 3 ms limit (section 5.9). Scripted objects on the lowest AI level work again; busy fights cost about 5 ms more AI per frame than in v0.5.2 and v0.5.3, as in v0.5.1.
 
 v0.5.3 is v0.5.2 with two fixes in the GL layer (loader/gl_patch.c). An attach of the depth renderbuffer already attached to a framebuffer is dropped: the distortion pass of stealth fields re-attached it every frame, and vitaGL allocated a new depth buffer each time, until glClear's scene start took 7 s per frame on hardware (issue #3). A cube-map face uploaded again with the same pixels is dropped: compressed reflection maps arrive twice per face, and vitaGL's upload count then left three faces in uncleared memory. Both changes only drop calls; frame rate elsewhere was not measured again.
 

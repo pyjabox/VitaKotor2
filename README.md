@@ -14,7 +14,7 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.5.3). Core gameplay and the major
+**Playable work in progress (v0.5.4). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
@@ -29,6 +29,8 @@ plays the voices of a dubbed PC copy, keeps each mod in its own folder so that
 mods work in every language, and stops party members moonwalking in fights.
 v0.5.3 fixes the frame rate falling to zero on the Harbinger when the stealthed
 Sith assassins appear, and the noise in the reflections of shiny floors.
+v0.5.4 makes scripted doors and objects work again in busy areas, such as the
+airlock in Peragus's dormitories.
 Performance tuning and broad playthrough validation remain active.**
 
 ### Working and validated
@@ -196,7 +198,7 @@ What is enabled by default:
     left three of the six faces in uncleared memory. The loader now drops the
     repeated upload.
 
-- **On main since v0.5.3 (not yet in a release):**
+- **New in v0.5.4:**
   - **Scripted doors and objects no longer stop in busy areas:** in Peragus's
     dormitories, the airlock's inner door stayed shut. Its script tells it to
     open, but the server AI's 3 ms limit stopped the lower AI levels every
