@@ -1938,10 +1938,80 @@ static void glTexSubImage2D_e(GLenum tg, GLint l, GLint xo, GLint yo, GLsizei w,
   glTexSubImage2D(tg, l, xo, yo, w, h, f, ty, px);
 }
 static void glTexParameteri_e(GLenum tg, GLenum p, GLint v) { GLLOG("glTexParameteri(0x%x,0x%x,%d)", (unsigned)tg, (unsigned)p, v); glTexParameteri(tg, p, v); }
-static void glGenFramebuffers_e(GLsizei n, GLuint *f) { GLLOG("glGenFramebuffers(%d)", (int)n); glGenFramebuffers(n, f); }
-static void glBindFramebuffer_e(GLenum tg, GLuint f) { GLLOG("glBindFramebuffer(0x%x,%u)", (unsigned)tg, (unsigned)f); glBindFramebuffer(tg, f); }
-static void glGenRenderbuffers_e(GLsizei n, GLuint *r) { GLLOG("glGenRenderbuffers(%d)", (int)n); glGenRenderbuffers(n, r); }
-static void glBindRenderbuffer_e(GLenum tg, GLuint r) { GLLOG("glBindRenderbuffer(0x%x,%u)", (unsigned)tg, (unsigned)r); glBindRenderbuffer(tg, r); }
+// Issue #3, the Harbinger's stealthed assassins: each frame that shows a
+// stealth field, IosSetDistortBuffer(true) binds the distortion FBO and attaches
+// the scene's depth renderbuffer to it again, as depth and as stencil. In GLES
+// that is a no-op. vitaGL has no real renderbuffers -- every FBO owns a hidden
+// depth/stencil surface -- and each glFramebufferRenderbuffer discards that
+// surface (deferred free) so the next scene allocates a new one, about 10 MB
+// at MSAA 4x. Frame after frame the churn starves the allocator: glClear's
+// scene start went from 17 ms to 7 s per frame on hardware. Attaching the
+// renderbuffer that is already attached is therefore dropped here. GXM starts
+// every scene from the background depth anyway (no forced load), so the kept
+// surface gives the same picture as a fresh one.
+#define FBA_MAX 32
+static struct { GLuint fb; GLenum at; GLuint obj; } s_fba[FBA_MAX];
+static int s_fba_n;
+static GLuint s_fba_draw, s_fba_read, s_fba_rb;
+static unsigned s_fba_skips;
+static int fba_find(GLuint fb, GLenum at) {
+  for (int i = 0; i < s_fba_n; i++)
+    if (s_fba[i].fb == fb && s_fba[i].at == at) return i;
+  return -1;
+}
+static void fba_drop(int i) { s_fba[i] = s_fba[--s_fba_n]; }
+static void fba_forget_fb(GLuint fb) {
+  for (int i = s_fba_n - 1; i >= 0; i--)
+    if (s_fba[i].fb == fb) fba_drop(i);
+}
+static void fba_forget_rb(GLuint rb) {
+  for (int i = s_fba_n - 1; i >= 0; i--)
+    if (s_fba[i].at != GL_COLOR_ATTACHMENT0 && s_fba[i].obj == rb) fba_drop(i);
+}
+static GLuint fba_target_fb(GLenum tg) { return tg == GL_READ_FRAMEBUFFER ? s_fba_read : s_fba_draw; }
+static void fba_note(GLuint fb, GLenum at, GLuint obj) {
+  int i = fba_find(fb, at);
+  if (i < 0) {
+    if (s_fba_n == FBA_MAX) return;  // table full: nothing is filtered for it
+    i = s_fba_n++;
+  }
+  s_fba[i].fb = fb; s_fba[i].at = at; s_fba[i].obj = obj;
+}
+
+static void glBindFramebuffer_e(GLenum tg, GLuint f) {
+  GLLOG("glBindFramebuffer(0x%x,%u)", (unsigned)tg, (unsigned)f);
+  if (tg != GL_READ_FRAMEBUFFER) s_fba_draw = f;
+  if (tg != GL_DRAW_FRAMEBUFFER) s_fba_read = f;
+  glBindFramebuffer(tg, f);
+}
+// vitaGL recycles framebuffer and renderbuffer slots, so a new or deleted name
+// forgets what was attached under it.
+static void glGenFramebuffers_e(GLsizei n, GLuint *f) {
+  GLLOG("glGenFramebuffers(%d)", (int)n);
+  glGenFramebuffers(n, f);
+  for (GLsizei i = 0; i < n; i++) fba_forget_fb(f[i]);
+}
+static void glDeleteFramebuffers_e(GLsizei n, const GLuint *f) {
+  for (GLsizei i = 0; i < n; i++) {
+    fba_forget_fb(f[i]);
+    if (f[i] == s_fba_draw) s_fba_draw = 0;
+    if (f[i] == s_fba_read) s_fba_read = 0;
+  }
+  glDeleteFramebuffers(n, f);
+}
+static void glGenRenderbuffers_e(GLsizei n, GLuint *r) {
+  GLLOG("glGenRenderbuffers(%d)", (int)n);
+  glGenRenderbuffers(n, r);
+  for (GLsizei i = 0; i < n; i++) fba_forget_rb(r[i]);
+}
+static void glDeleteRenderbuffers_e(GLsizei n, const GLuint *r) {
+  for (GLsizei i = 0; i < n; i++) {
+    fba_forget_rb(r[i]);
+    if (r[i] == s_fba_rb) s_fba_rb = 0;
+  }
+  glDeleteRenderbuffers(n, r);
+}
+static void glBindRenderbuffer_e(GLenum tg, GLuint r) { GLLOG("glBindRenderbuffer(0x%x,%u)", (unsigned)tg, (unsigned)r); s_fba_rb = r; glBindRenderbuffer(tg, r); }
 // The scrambled chargen/menu backgrounds are RENDER TARGETS, not uploads: every
 // `glTexImage2D(847x480, data=NULL)` is immediately followed by a matching
 // glRenderbufferStorage for the depth attachment, i.e. the game renders its 3D
@@ -1962,10 +2032,42 @@ static void glRenderbufferStorage_e(GLenum tg, GLenum ifmt, GLsizei w, GLsizei h
   GLLOG("glRenderbufferStorage(0x%x,0x%x,%dx%d)", (unsigned)tg, (unsigned)ifmt, (int)w, (int)h);
   if (aw != w)
     log_printf("[GL] RT pad: renderbuffer %dx%d -> %dx%d", (int)w, (int)h, (int)aw, (int)h);
+  fba_forget_rb(s_fba_rb);  // new format or size: let the next attach through
   glRenderbufferStorage(tg, ifmt, aw, h);
 }
-static void glFramebufferRenderbuffer_e(GLenum tg, GLenum at, GLenum rt, GLuint r) { GLLOG("glFramebufferRenderbuffer(at=0x%x)", (unsigned)at); glFramebufferRenderbuffer(tg, at, rt, r); }
-static void glFramebufferTexture2D_e(GLenum tg, GLenum at, GLenum tt, GLuint t, GLint l) { GLLOG("glFramebufferTexture2D(at=0x%x,tex=%u)", (unsigned)at, (unsigned)t); glFramebufferTexture2D(tg, at, tt, t, l); }
+static void glFramebufferRenderbuffer_e(GLenum tg, GLenum at, GLenum rt, GLuint r) {
+  GLLOG("glFramebufferRenderbuffer(at=0x%x)", (unsigned)at);
+  GLuint fb = fba_target_fb(tg);
+  if (fb && r && rt == GL_RENDERBUFFER &&
+      (at == GL_DEPTH_ATTACHMENT || at == GL_STENCIL_ATTACHMENT || at == GL_DEPTH_STENCIL_ATTACHMENT)) {
+    int i = fba_find(fb, at);
+    if (i >= 0 && s_fba[i].obj == r) {
+      if (++s_fba_skips == 1 || s_fba_skips % 1000 == 0)
+        log_printf("[fbattach] fb %u at 0x%x: renderbuffer %u already attached, re-attach dropped (%u so far)",
+                   (unsigned)fb, (unsigned)at, (unsigned)r, s_fba_skips);
+      return;
+    }
+    fba_note(fb, at, r);
+  } else if (fb) {  // detach or another kind of attachment: track it no more
+    int i = fba_find(fb, at);
+    if (i >= 0) fba_drop(i);
+  }
+  glFramebufferRenderbuffer(tg, at, rt, r);
+}
+// A different colour texture can resize the FBO, so its depth attachments are
+// let through again; the same texture attached again changes nothing.
+static void glFramebufferTexture2D_e(GLenum tg, GLenum at, GLenum tt, GLuint t, GLint l) {
+  GLLOG("glFramebufferTexture2D(at=0x%x,tex=%u)", (unsigned)at, (unsigned)t);
+  GLuint fb = fba_target_fb(tg);
+  if (fb) {
+    int i = fba_find(fb, at);
+    if (at != GL_COLOR_ATTACHMENT0 || i < 0 || s_fba[i].obj != t) {
+      fba_forget_fb(fb);
+      if (at == GL_COLOR_ATTACHMENT0) fba_note(fb, at, t);
+    }
+  }
+  glFramebufferTexture2D(tg, at, tt, t, l);
+}
 static GLenum glCheckFramebufferStatus_e(GLenum tg) { GLLOG("glCheckFramebufferStatus(0x%x) ...", (unsigned)tg); GLenum s = glCheckFramebufferStatus(tg); log_printf("[GL]  -> status 0x%x", (unsigned)s); return s; }
 static void glGenBuffers_e(GLsizei n, GLuint *b) { GLLOG("glGenBuffers(%d)", (int)n); glGenBuffers(n, b); }
 static void glBindBuffer_e(GLenum tg, GLuint b) {
@@ -2146,7 +2248,7 @@ static const so_default_dynlib gl_dynlib[] = {
   { "glUnmapBufferOES",                  (uintptr_t)&glUnmapBuffer },
   { "glGetBufferPointervOES",            (uintptr_t)&glGetBufferPointervOES_g },
   { "glBindFramebufferOES",              (uintptr_t)&glBindFramebuffer_e },
-  { "glDeleteFramebuffersOES",           (uintptr_t)&glDeleteFramebuffers },
+  { "glDeleteFramebuffersOES",           (uintptr_t)&glDeleteFramebuffers_e },
   { "glGenFramebuffersOES",              (uintptr_t)&glGenFramebuffers_e },
   { "glFramebufferRenderbufferOES",      (uintptr_t)&glFramebufferRenderbuffer_e },
   { "glFramebufferTexture2DOES",         (uintptr_t)&glFramebufferTexture2D_e },
@@ -2157,9 +2259,9 @@ static const so_default_dynlib gl_dynlib[] = {
   { "glCopyTexImage2D",                  (uintptr_t)&glCopyTexImage2D },
   { "glCopyTexSubImage2D",               (uintptr_t)&glCopyTexSubImage2D },
   { "glDeleteBuffers",                   (uintptr_t)&glDeleteBuffers_e },
-  { "glDeleteFramebuffers",              (uintptr_t)&glDeleteFramebuffers },
+  { "glDeleteFramebuffers",              (uintptr_t)&glDeleteFramebuffers_e },
   { "glDeleteProgram",                   (uintptr_t)&glDeleteProgram_e },
-  { "glDeleteRenderbuffers",             (uintptr_t)&glDeleteRenderbuffers },
+  { "glDeleteRenderbuffers",             (uintptr_t)&glDeleteRenderbuffers_e },
   { "glDeleteShader",                    (uintptr_t)&glDeleteShader },
   { "glDeleteTextures",                  (uintptr_t)&glDeleteTextures_e },
   { "glDisableVertexAttribArray",        (uintptr_t)&glDisableVertexAttribArray_e },
