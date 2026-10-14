@@ -817,8 +817,11 @@ rendering defects.
 | v0.5.2 eboot | `ee1788b7304af0e45fde9ea470401161e022075b4c6ebee00ee699672cfb1c00` |
 | v0.5.3 eboot | `4a049a7047606a71180cd5c6a926a84de4b1149de1c449834154793870dee82e` |
 | v0.5.4 eboot | `b0b409cecda3f91055e866effc36b4ff2d4ff5bcf552801c0539534c2b7ba3fa` |
+| v0.5.5 eboot | `248252a9c332db4df102d595bc8aa2738125f9bd18966660be772d8b485263bd` |
 
 ## 15. Current decision
+
+v0.5.5 is v0.5.4 with a buffer unbound before the game deletes it (loader/gl_patch.c): vitaGL kept a deleted index buffer bound, and the loading screen after the Batu Rem fight on Telos crashed reading through it (issue #4). It also logs late audio output per 10 s window (`[snd-gap]`, issue #5). Frame rate was not measured again: the unbind runs only when a bound buffer is deleted, and the gap check reads the clock twice per 21 ms audio grain.
 
 v0.5.4 is v0.5.3 with the server AI throttle without its 3 ms limit (section 5.9). Scripted objects on the lowest AI level work again; busy fights cost about 5 ms more AI per frame than in v0.5.2 and v0.5.3, as in v0.5.1.
 

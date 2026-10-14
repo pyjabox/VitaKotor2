@@ -14,7 +14,7 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.5.4). Core gameplay and the major
+**Playable work in progress (v0.5.5). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
@@ -30,7 +30,8 @@ mods work in every language, and stops party members moonwalking in fights.
 v0.5.3 fixes the frame rate falling to zero on the Harbinger when the stealthed
 Sith assassins appear, and the noise in the reflections of shiny floors.
 v0.5.4 makes scripted doors and objects work again in busy areas, such as the
-airlock in Peragus's dormitories.
+airlock in Peragus's dormitories. v0.5.5 fixes the black screen on Telos when
+the apartments load after the fight with Batu Rem.
 Performance tuning and broad playthrough validation remain active.**
 
 ### Working and validated
@@ -208,7 +209,7 @@ What is enabled by default:
     what they did in v0.5.1: about 5 ms more AI per frame than v0.5.2 in a Dxun
     fight (frames about 45 ms instead of 39 ms).
 
-- **On main since v0.5.4 (not yet in a release):**
+- **New in v0.5.5:**
   - **No more black screen on Telos after the Batu Rem fight:** loading the
     apartments crashed in vitaGL
     ([issue #4](https://github.com/pyjabox/VitaKotor2/issues/4)). When the game
