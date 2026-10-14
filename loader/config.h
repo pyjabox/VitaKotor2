@@ -610,6 +610,11 @@
 // The talk table (dialog.tlk, ~10 MB) read once into RAM and served from there
 // (loader/ramfile.c). Each string lookup otherwise flushes, seeks and tells on
 // the card file, ~38 ms per lookup on hardware: the combat-message freezes.
+// Loose voice lines and streamed sounds served from RAM (loader/ramfile.c): the
+// game keeps each speaker's last line open, and a process may hold 64 files.
+#ifndef RAMFILE_VOICE
+#define RAMFILE_VOICE             1
+#endif
 #ifndef RAMFILE_TLK
 #define RAMFILE_TLK               1
 #endif
@@ -631,6 +636,11 @@
 #endif
 // FMOD System::update scans the channels only when an END may be owed
 // (loader/audio_patch.c, g_end_dirty); 0 scans on every call.
+// Count the files and folders the process holds open (loader/fdtrack.c): an
+// [fd] line every 30 s, and any failed open other than "not there".
+#ifndef FD_TRACK
+#define FD_TRACK                  1
+#endif
 // Test builds: the audio output thread alternates between the default priority
 // and AUDIO_PRIO_HIGH every 10 s, logging output gaps per window ([snd-gap]).
 #ifndef AUDIO_PRIO_AB

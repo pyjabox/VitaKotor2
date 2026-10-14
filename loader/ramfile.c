@@ -24,6 +24,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "bigalloc.h"
 #include "ramfile.h"
 
 #define RF_FILES 2              /* distinct files kept */
@@ -122,9 +123,99 @@ FILE *ramfile_open(const char *path, const char *mode) {
   return f;
 }
 
+/* ---- voice lines -----------------------------------------------------------
+ * CExoStreamingSoundSourceInternal opens each voice line with fopen and keeps
+ * the FILE until the same source plays its next line or is destroyed: Stop
+ * only closes the FMOD stream (libkotor2 0x5736c4; InitializeSource 0x573738
+ * and the destructor are the only fcloses, of source+0xc4). Every speaker and
+ * terminal therefore holds its last line open. On Android that costs nothing.
+ * On the Vita a process can hold 64 files, and a voice pack's lines are loose
+ * files on the card: in Telos's apartments 58 of them were held at once, then
+ * every open failed (0x80010018) -- dialogues, scripts, the save -- and the
+ * room stopped answering. Archive voice lines (English) share one handle and
+ * never reach this path.
+ *
+ * So a loose voice line or streamed sound is read whole into RAM at open, its
+ * card handle closed at once, and the game gets an fmemopen stream over the
+ * copy, freed at its fclose. */
+#define RF_VOICES 256
+#define RF_VOICE_MAX_BYTES (1024u * 1024u)
+typedef struct { FILE *f; void *buf; size_t size; } rf_voice_t;
+static rf_voice_t s_voice[RF_VOICES];
+static unsigned s_voice_live, s_voice_peak, s_voice_total;
+static size_t s_voice_bytes;
+
+static int has_dir(const char *path, const char *dir) {   /* "dir/" at the start or after a '/' */
+  size_t n = strlen(dir);
+  for (const char *p = path; *p; p++)
+    if ((p == path || p[-1] == '/') && !strncasecmp(p, dir, n) && p[n] == '/') return 1;
+  return 0;
+}
+
+static int voice_wanted(const char *path, const char *mode) {
+  if (!RAMFILE_VOICE || !path || !mode || mode[0] != 'r' || strchr(mode, '+')) return 0;
+  return has_dir(path, "streamvoice") || has_dir(path, "streamsounds");
+}
+
+FILE *ramfile_open_voice(const char *path, const char *mode) {
+  if (!voice_wanted(path, mode)) return NULL;
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) return NULL;                       /* not there: fopen says so as usual */
+  off_t size = lseek(fd, 0, SEEK_END);
+  if (size <= 0 || size > (off_t)RF_VOICE_MAX_BYTES || lseek(fd, 0, SEEK_SET) != 0) {
+    close(fd);
+    return NULL;                                 /* the card as before */
+  }
+  char *buf = big_malloc((size_t)size);
+  if (!buf) { close(fd); return NULL; }
+  size_t got = 0;
+  while (got < (size_t)size) {
+    ssize_t r = read(fd, buf + got, (size_t)size - got);
+    if (r <= 0) break;
+    got += (size_t)r;
+  }
+  close(fd);
+  if (got != (size_t)size) { big_free(buf); return NULL; }
+  FILE *f = fmemopen(buf, (size_t)size, "rb");
+  if (!f) { big_free(buf); return NULL; }
+  lock();
+  int slot = -1;
+  for (int i = 0; i < RF_VOICES && slot < 0; i++)
+    if (!s_voice[i].f) slot = i;
+  if (slot >= 0) {
+    s_voice[slot].f = f;
+    s_voice[slot].buf = buf;
+    s_voice[slot].size = (size_t)size;
+    s_voice_bytes += (size_t)size;
+    if (++s_voice_live > s_voice_peak) s_voice_peak = s_voice_live;
+    s_voice_total++;
+  }
+  unsigned live = s_voice_live, total = s_voice_total;
+  size_t bytes = s_voice_bytes;
+  unlock();
+  if (slot < 0) { fclose(f); big_free(buf); return NULL; }   /* table full: the card */
+  if (total <= 3 || total % 64 == 0)
+    log_printf("[ramfile] voice line in RAM: %s (%u KB); %u held now (%u KB), %u served",
+               path, (unsigned)(size / 1024), live, (unsigned)(bytes / 1024), total);
+  return f;
+}
+
 int ramfile_close(FILE *f) {
   int ours = 0;
   lock();
+  for (int i = 0; i < RF_VOICES; i++)
+    if (f && s_voice[i].f == f) {
+      void *buf = s_voice[i].buf;
+      s_voice_bytes -= s_voice[i].size;
+      s_voice[i].f = NULL;
+      s_voice[i].buf = NULL;
+      s_voice[i].size = 0;
+      s_voice_live--;
+      unlock();
+      fclose(f);
+      big_free(buf);
+      return 1;
+    }
   for (int i = 0; i < RF_STREAMS; i++)
     if (f && s_stream[i] == f) { s_stream[i] = NULL; ours = 1; break; }
   unlock();

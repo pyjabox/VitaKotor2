@@ -64,6 +64,7 @@ add_executable(KOTOR2
   loader/occlusion_cull.c
   loader/ai_list_cache.c
   loader/ai_throttle.c
+  loader/fdtrack.c
   loader/cansee_cache.c
   loader/bloom_ctl.c
   loader/ramfile.c
@@ -235,6 +236,9 @@ target_link_libraries(KOTOR2
 # Vita SDL's touch backend reads the panels through sceTouchPeek; input_patch.c
 # keeps the rear panel (and the front one under the on-screen keyboard) out.
 target_link_libraries(KOTOR2 -Wl,--wrap=sceTouchPeek)
+# loader/fdtrack.c counts every file and folder handle the process opens.
+target_link_libraries(KOTOR2 -Wl,--wrap=sceIoOpen -Wl,--wrap=sceIoClose
+  -Wl,--wrap=sceIoDopen -Wl,--wrap=sceIoDclose)
 
 option(KOTOR_AUTOTEST "Drive menus and gameplay with scripted controller input" OFF)
 set(KOTOR_AUTOTEST_PLAY_SECONDS 120 CACHE STRING "Autotest gameplay duration")

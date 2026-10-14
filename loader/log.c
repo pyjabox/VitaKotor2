@@ -70,13 +70,7 @@ static void log_drain(void) {
 void log_flush(void) {
 #if LOG_BUF_BYTES > 0
   int held = log_lock();
-  log_drain();
-  // Close inside the lock: another thread reopening/writing g_log_fd while we
-  // close it would write to a stale descriptor and lose the line.
-  if (g_log_fd >= 0) {
-    sceIoClose(g_log_fd);
-    g_log_fd = -1;
-  }
+  log_drain();                 // the file stays open; see log_printf
   log_unlock(held);
 #else
   if (g_log_fd >= 0) {
@@ -124,7 +118,7 @@ static const char *const k_log_keep[] = {
   "fail", "FAIL", "error", "ERROR", "Error", "WARNING", "warning",
   "MISSING", "missing", "abort", "ABORT", "CRASH", "unresolved",
   "[DRAW_FRAME]", "[cull]", "[ailist]", "[cansee]", "[bloom]", "[ramfile]", "[glsf]", "[effects-low]", "[ini]", "[stall]", "[dxt]", "[music]", "[mipgen]", "[obbidx]", "[aibudget]", "[aithrottle]", "[autotest]", "[glw]", "[glw:prof]", "[pcprof]", "[roomab]", "[roomdist]", "[loadscreen]", "[gxmp]", "[touch]", "[events]", "[vsync]", "[vsync-ab]",
-  "[lang]", "[mods]", "[bootmenu]", "[fbattach]", "[cubeup]", "[glbuf]", "[snd-gap]", "[snd-phase]", "[snd-cap]",
+  "[lang]", "[mods]", "[bootmenu]", "[fbattach]", "[cubeup]", "[glbuf]", "[snd-gap]", "[snd-phase]", "[snd-cap]", "[fd]",
 };
 
 static int log_suppressed(const char *fmt) {
@@ -190,10 +184,12 @@ void log_printf(const char *fmt, ...) {
   }
   memcpy(g_buf + g_buf_n, line, (size_t)n);
   g_buf_n += n;
-  // Durability floor: drain and close so at most LOG_FLUSH_MS is ever at risk.
+  // Durability floor: drain so at most LOG_FLUSH_MS is ever at risk. The file
+  // stays open: a write is with the kernel once sceIoWrite returns, and closing
+  // and reopening at every flush meant that once the process could open no more
+  // files (issue: Telos apartments, see fdtrack.c) every later line was lost.
   if (t - g_last_flush >= (uint64_t)LOG_FLUSH_MS * 1000) {
     log_drain();
-    if (g_log_fd >= 0) { sceIoClose(g_log_fd); g_log_fd = -1; }
     g_last_flush = t;
   }
   log_unlock(held);

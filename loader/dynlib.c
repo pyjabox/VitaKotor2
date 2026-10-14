@@ -687,8 +687,11 @@ static FILE *fopen_diag(const char *path, const char *mode) {
     if (ms == MS_ABSENT || ms == MS_VDIR) { errno = ENOENT; return NULL; }
     if (ms == MS_FILE) open_path = vpath;
   }
-  /* The talk table: a stream over a RAM copy (ramfile.c). */
+  /* The talk table, and loose voice lines: a stream over a RAM copy
+   * (ramfile.c). Voice lines because the game holds each speaker's last one
+   * open, and a process may hold 64 files. */
   FILE *rf = ramfile_open(open_path, mode);
+  if (!rf) rf = ramfile_open_voice(open_path, mode);
   if (rf) {
     if (++g_files_open > g_files_peak) g_files_peak = g_files_open;
     io_track_add(rf, path);
