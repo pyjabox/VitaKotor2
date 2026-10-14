@@ -631,6 +631,12 @@
 #endif
 // FMOD System::update scans the channels only when an END may be owed
 // (loader/audio_patch.c, g_end_dirty); 0 scans on every call.
+// Test builds: the audio output thread alternates between the default priority
+// and AUDIO_PRIO_HIGH every 10 s, logging output gaps per window ([snd-gap]).
+#ifndef AUDIO_PRIO_AB
+#define AUDIO_PRIO_AB             0
+#endif
+#define AUDIO_PRIO_HIGH           96
 #ifndef AUDIO_UPDATE_SKIP
 #define AUDIO_UPDATE_SKIP         1
 #endif

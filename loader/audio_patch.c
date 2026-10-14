@@ -493,6 +493,139 @@ void audio_streaming_pause(int paused) {
 #endif
 }
 
+#ifndef AUDIO_VOICE_DIAG
+#define AUDIO_VOICE_DIAG 0
+#endif
+#if AUDIO_VOICE_DIAG
+/* Diagnostic (AUDIO_VOICE_DIAG): record the first CAP_VOICES one-shot MP3
+ * streams (voice lines) -- their compressed bytes and what our decoder made of
+ * them -- and CAP_MIX_S seconds of the final mix from the first one on, so they
+ * can be compared offline with a reference decoder. Files go to
+ * ux0:data/kotor2/capture/, written by a low-priority thread once each
+ * recording is complete. */
+#define CAP_VOICES 4
+#define CAP_VOICE_S 15
+#define CAP_MIX_S 15
+typedef struct {
+  const Stream *st;                       /* recording; NULL once handed over */
+  int16_t *pcm; unsigned cap, n;          /* frames */
+  unsigned ch, rate; int hw;
+  const unsigned char *es; unsigned es_len;
+  unsigned char *es_copy;
+  char name[32];
+  volatile int ready, done;
+} VoiceCap;
+static VoiceCap s_vcap[CAP_VOICES];
+static int s_vcap_n;
+static int16_t *s_mix;
+static unsigned s_mix_cap, s_mix_n;
+static volatile int s_mix_on, s_mix_ready, s_mix_done;
+static SceUID s_cap_thread = -1;
+
+static void cap_write(const char *path, const void *a, unsigned alen, const void *b, unsigned blen) {
+  SceUID fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+  if (fd < 0) { log_printf("[snd-cap] cannot write %s (0x%08X)", path, (unsigned)fd); return; }
+  if (alen) sceIoWrite(fd, a, alen);
+  if (blen) sceIoWrite(fd, b, blen);
+  sceIoClose(fd);
+}
+static void cap_wav(const char *path, const int16_t *pcm, unsigned frames, unsigned ch, unsigned rate) {
+  uint32_t data = frames * ch * 2u;
+  uint8_t h[44];
+  memcpy(h, "RIFF", 4); uint32_t v = 36 + data; memcpy(h + 4, &v, 4);
+  memcpy(h + 8, "WAVEfmt ", 8); v = 16; memcpy(h + 16, &v, 4);
+  uint16_t w = 1; memcpy(h + 20, &w, 2); w = (uint16_t)ch; memcpy(h + 22, &w, 2);
+  memcpy(h + 24, &rate, 4); v = rate * ch * 2u; memcpy(h + 28, &v, 4);
+  w = (uint16_t)(ch * 2u); memcpy(h + 32, &w, 2); w = 16; memcpy(h + 34, &w, 2);
+  memcpy(h + 36, "data", 4); memcpy(h + 40, &data, 4);
+  cap_write(path, h, sizeof h, pcm, data);
+}
+static int cap_thread(SceSize args, void *argp) {
+  (void)args; (void)argp;
+  sceIoMkdir(DATA_PATH "/capture", 0777);
+  for (;;) {
+    int pending = 0;
+    char path[160];
+    for (int i = 0; i < s_vcap_n; i++) {
+      VoiceCap *c = &s_vcap[i];
+      if (c->done) continue;
+      if (!c->ready) { pending = 1; continue; }
+      snprintf(path, sizeof path, DATA_PATH "/capture/voice%d_%s_%s.mp3", i, c->hw ? "hw" : "minimp3", c->name);
+      cap_write(path, c->es_copy, c->es_copy ? c->es_len : 0, NULL, 0);
+      snprintf(path, sizeof path, DATA_PATH "/capture/voice%d_%s_%s.wav", i, c->hw ? "hw" : "minimp3", c->name);
+      cap_wav(path, c->pcm, c->n, c->ch, c->rate);
+      log_printf("[snd-cap] voice %d \"%s\": %s decoder, %u Hz, %u ch, %u frames (%u ms), %u bytes of MP3 -> %s",
+                 i, c->name, c->hw ? "hardware" : "minimp3", c->rate, c->ch, c->n,
+                 c->rate ? (unsigned)((uint64_t)c->n * 1000u / c->rate) : 0, c->es_copy ? c->es_len : 0, path);
+      free(c->pcm); free(c->es_copy); c->pcm = NULL; c->es_copy = NULL;
+      c->done = 1;
+    }
+    if (s_mix && !s_mix_done) {
+      if (s_mix_ready) {
+        cap_wav(DATA_PATH "/capture/mix.wav", s_mix, s_mix_n, OUT_CH, OUT_RATE);
+        log_printf("[snd-cap] final mix: %u frames (%u ms) -> " DATA_PATH "/capture/mix.wav",
+                   s_mix_n, (unsigned)((uint64_t)s_mix_n * 1000u / OUT_RATE));
+        free(s_mix); s_mix = NULL;
+        s_mix_done = 1;
+      } else pending = 1;
+    }
+    if (!pending && s_vcap_n == CAP_VOICES && s_mix_done) break;
+    sceKernelDelayThread(250000);
+  }
+  log_printf("[snd-cap] all recordings written");
+  return 0;
+}
+/* At open, from the streaming createSound path: one-shot (FMOD_LOOP_OFF) MP3
+ * streams are the voice lines. */
+static void vcap_begin(const Stream *st, unsigned mode, const void *es, unsigned es_len, const AudioPcm *fmt) {
+  if (s_vcap_n >= CAP_VOICES || (mode & 3u) != 1u || !(st->hw || st->sw) || !fmt || !fmt->rate) return;
+  VoiceCap *c = &s_vcap[s_vcap_n];
+  memset(c, 0, sizeof *c);
+  c->ch = fmt->channels ? fmt->channels : 1;
+  c->rate = fmt->rate;
+  c->cap = CAP_VOICE_S * c->rate;
+  c->pcm = (int16_t *)malloc((size_t)c->cap * c->ch * sizeof(int16_t));
+  if (!c->pcm) { log_printf("[snd-cap] no memory for voice %d", s_vcap_n); return; }
+  c->hw = st->hw; c->es = (const unsigned char *)es; c->es_len = es_len;
+  snprintf(c->name, sizeof c->name, "%s", st->name[0] ? st->name : "stream");
+  for (char *p = c->name; *p; p++) if (*p == '/' || *p == '\\' || *p == ':' || *p == ' ') *p = '_';
+  c->st = st;
+  s_vcap_n++;
+  if (!s_mix && !s_mix_done) {
+    s_mix_cap = CAP_MIX_S * OUT_RATE;
+    s_mix = (int16_t *)malloc((size_t)s_mix_cap * OUT_CH * sizeof(int16_t));
+    if (s_mix) s_mix_on = 1;
+    else { log_printf("[snd-cap] no memory for the mix"); s_mix_done = 1; }
+  }
+  if (s_cap_thread < 0) {
+    s_cap_thread = sceKernelCreateThread("kotor_sndcap", cap_thread, 191, 0x4000, 0, 0, NULL);
+    if (s_cap_thread >= 0) sceKernelStartThread(s_cap_thread, 0, NULL);
+  }
+  log_printf("[snd-cap] recording voice %d \"%s\" (%s decoder, %u Hz, %u ch)", s_vcap_n - 1, c->name,
+             c->hw ? "hardware" : "minimp3", c->rate, c->ch);
+}
+static void vcap_append(const Stream *st, const int16_t *pcm, unsigned frames) {
+  for (int i = 0; i < s_vcap_n; i++) {
+    VoiceCap *c = &s_vcap[i];
+    if (c->st != st || c->ready) continue;
+    unsigned take = c->cap - c->n < frames ? c->cap - c->n : frames;
+    memcpy(c->pcm + (size_t)c->n * c->ch, pcm, (size_t)take * c->ch * sizeof(int16_t));
+    c->n += take;
+  }
+}
+/* At close: the stream's bytes are complete by now and still allocated. */
+static void vcap_end(const Stream *st) {
+  for (int i = 0; i < s_vcap_n; i++) {
+    VoiceCap *c = &s_vcap[i];
+    if (c->st != st || c->ready) continue;
+    c->es_copy = (unsigned char *)malloc(c->es_len ? c->es_len : 1);
+    if (c->es_copy && c->es_len) memcpy(c->es_copy, c->es, c->es_len);
+    c->st = NULL;
+    c->ready = 1;
+  }
+}
+#endif
+
 /* The ring's decoder end. Looping is honoured but the game passes LOOP_OFF and
  * drives its own music playlist -- looping here would mean a track could never
  * end and the area's music would never change. */
@@ -509,6 +642,9 @@ static unsigned stream_fill_cb(void *ctx, int16_t *dst, unsigned frames,
       *eos_out = 1;
     }
   }
+#if AUDIO_VOICE_DIAG
+  if (got) vcap_append(st, dst, got);
+#endif
   return got;
 }
 
@@ -571,6 +707,9 @@ static Stream *stream_open(void *src_owned, const void *es, unsigned len, unsign
  * address-range check that tells pool pointers from newlib's. */
 static void stream_close(Stream *st) {
   if (!st) return;
+#if AUDIO_VOICE_DIAG
+  vcap_end(st);
+#endif
   if (st->dec) {
     int hw = st->hw, sw = st->sw;
     audio_mp3_stream_close(st->dec);
@@ -807,6 +946,8 @@ static float snap_3d_gain(const MixSnap *m, float *pan_out) {
 /* ---- mixer ---------------------------------------------------------------- */
 /* Limiter state: a global gain the mix rides instead of clipping. */
 static float    g_lim_gain = 1.0f, g_lim_min = 1.0f;
+static unsigned g_lw_on = 0;            /* grains the limiter ran below unity, this [snd-gap] window */
+static float    g_lw_min = 1.0f;        /* its lowest gain this window */
 static unsigned g_lim_grains = 0, g_lim_clipped = 0;
 static int32_t  g_lim_peak = 0;
 
@@ -1099,6 +1240,8 @@ static void mix_grain(void) {
   if (target < g_lim_gain) g_lim_gain = target;              /* instant attack */
   else g_lim_gain += (target - g_lim_gain) * 0.02f;          /* gentle release */
   if (g_lim_gain < g_lim_min) g_lim_min = g_lim_gain;
+  if (g_lim_gain < 0.999f) g_lw_on++;
+  if (g_lim_gain < g_lw_min) g_lw_min = g_lim_gain;
   g_lim_grains++;
 
   for (int i = 0; i < OUT_GRAIN * OUT_CH; i++) {
@@ -1172,19 +1315,84 @@ static int audio_thread(SceSize args, void *argp) {
                  (unsigned long long)t0, (unsigned long long)t1);
     }
   }
+  /* Output gaps. sceAudioOutOutput returns once the port has taken the grain,
+   * leaving one grain (OUT_GRAIN frames, ~21.3 ms) to play while the next is
+   * mixed. When the next call comes later than that and then does not block,
+   * the port ran dry: an audible gap, though no stream underran. Per 10 s
+   * window: gaps, their total and worst length, and how much of the late time
+   * this thread was off-core (waiting for a CPU) rather than mixing. Release
+   * logs get a [snd-gap] line only for windows with gaps; AUDIO_PRIO_AB builds
+   * log every window and alternate this thread's priority between the default
+   * and AUDIO_PRIO_HIGH, one window each. */
+  const uint64_t grain_us = (uint64_t)OUT_GRAIN * 1000000u / OUT_RATE;
+  SceUInt64 prev_ret = 0, w_t0 = sceKernelGetProcessTimeWide();
+  uint64_t prev_ret_c = 0;
+  unsigned w_grains = 0, w_gaps = 0;
+  uint64_t w_gap_us = 0, w_gap_max = 0, w_gap_off_us = 0, w_mix_us = 0, w_mix_max = 0;
+  int high = 0;
+  log_printf("[snd-gap] output thread: priority %d, cores 0x%x, grain %u us%s",
+             sceKernelGetThreadCurrentPriority(), (unsigned)sceKernelGetThreadCpuAffinityMask(0),
+             (unsigned)grain_us, AUDIO_PRIO_AB ? "; A/B: priority alternates every 10 s" : "");
   while (g_running) {
     SceUInt64 g0 = sceKernelGetProcessTimeWide();
     uint64_t c0 = audio_cpu_ticks();
     mix_grain();
     SceUInt64 g1 = sceKernelGetProcessTimeWide();
+#if AUDIO_VOICE_DIAG
+    if (s_mix_on && s_mix) {
+      unsigned take = s_mix_cap - s_mix_n < OUT_GRAIN ? s_mix_cap - s_mix_n : OUT_GRAIN;
+      memcpy(s_mix + (size_t)s_mix_n * OUT_CH, g_out, (size_t)take * OUT_CH * sizeof(int16_t));
+      s_mix_n += take;
+      if (s_mix_n >= s_mix_cap) { s_mix_on = 0; s_mix_ready = 1; }
+    }
+#endif
     sceAudioOutOutput(g_port, g_out);   /* blocks until the grain is consumed */
     SceUInt64 g2 = sceKernelGetProcessTimeWide();
     uint64_t out_us = g2 - g1;
     g_ph_out_us += out_us;
     if (out_us > g_ph_out_max) g_ph_out_max = out_us;
     g_ph_grain_us += g2 - g0;
-    g_ph_cpu_ticks += audio_cpu_ticks() - c0;
+    uint64_t c2 = audio_cpu_ticks();
+    g_ph_cpu_ticks += c2 - c0;
     g_ph_grains++;
+
+    w_grains++;
+    w_mix_us += g1 - g0;
+    if (g1 - g0 > w_mix_max) w_mix_max = g1 - g0;
+    if (prev_ret) {
+      uint64_t since = g1 - prev_ret;           /* what the port had to play meanwhile */
+      if (since > grain_us + 1000u && out_us < 2000u) {
+        uint64_t gap = since - grain_us;
+        uint64_t cpu = g_ticks_per_ms ? (c2 - prev_ret_c) * 1000u / g_ticks_per_ms : 0;
+        uint64_t busy = cpu > out_us ? cpu - out_us : 0;   /* on-core before the call */
+        w_gaps++;
+        w_gap_us += gap;
+        if (gap > w_gap_max) w_gap_max = gap;
+        w_gap_off_us += since > busy ? since - busy : 0;
+      }
+    }
+    prev_ret = g2;
+    prev_ret_c = c2;
+
+    if (g2 - w_t0 >= 10000000u) {
+      if (AUDIO_PRIO_AB || AUDIO_VOICE_DIAG || w_gaps)
+        log_printf("[snd-gap] %s%u grains: %u gaps, %llu ms in all, worst %llu ms; late time off-core %llu%% | "
+                   "mix avg %llu us, worst %llu us | limiter below unity in %u grains, lowest gain %.3f",
+                   AUDIO_PRIO_AB ? (high ? "HIGH " : "DEFAULT ") : "", w_grains, w_gaps,
+                   (unsigned long long)(w_gap_us / 1000u), (unsigned long long)(w_gap_max / 1000u),
+                   (unsigned long long)(w_gap_us ? w_gap_off_us * 100u / (w_gap_us + w_gaps * grain_us) : 0),
+                   (unsigned long long)(w_mix_us / w_grains), (unsigned long long)w_mix_max,
+                   g_lw_on, (double)g_lw_min);
+      g_lw_on = 0;
+      g_lw_min = 1.0f;
+      w_t0 = g2;
+      w_grains = w_gaps = 0;
+      w_gap_us = w_gap_max = w_gap_off_us = w_mix_us = w_mix_max = 0;
+#if AUDIO_PRIO_AB
+      high = !high;
+      sceKernelChangeThreadPriority(0, high ? AUDIO_PRIO_HIGH : 0x10000100);
+#endif
+    }
   }
   return 0;
 }
@@ -1648,6 +1856,9 @@ static int stream_try(const char *name, unsigned mode, void *owned, unsigned tot
   unsigned bn = 0;
   while (name[bn] && bn < sizeof st->name - 1) { st->name[bn] = name[bn]; bn++; }
   st->name[bn] = '\0';
+#if AUDIO_VOICE_DIAG
+  vcap_begin(st, (unsigned)mode, owned, total, &fmt);
+#endif
   lock();
   Snd *ss = snd_alloc();
   unlock();
