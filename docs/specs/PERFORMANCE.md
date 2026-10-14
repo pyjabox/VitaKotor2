@@ -803,8 +803,11 @@ rendering defects.
 | v0.5.0 eboot | `a92eec91d207cd508433a30607b6ddad8ea7330ed89f689f27b4feb94859d3c2` |
 | v0.5.1 eboot | `da4d9ed9737de0edf06461cc63a7a524c7218ee39b144e79b70d30a04a6fdbdf` |
 | v0.5.2 eboot | `ee1788b7304af0e45fde9ea470401161e022075b4c6ebee00ee699672cfb1c00` |
+| v0.5.3 eboot | `4a049a7047606a71180cd5c6a926a84de4b1149de1c449834154793870dee82e` |
 
 ## 15. Current decision
+
+v0.5.3 is v0.5.2 with two fixes in the GL layer (loader/gl_patch.c). An attach of the depth renderbuffer already attached to a framebuffer is dropped: the distortion pass of stealth fields re-attached it every frame, and vitaGL allocated a new depth buffer each time, until glClear's scene start took 7 s per frame on hardware (issue #3). A cube-map face uploaded again with the same pixels is dropped: compressed reflection maps arrive twice per face, and vitaGL's upload count then left three faces in uncleared memory. Both changes only drop calls; frame rate elsewhere was not measured again.
 
 v0.5.2 is v0.5.1 with the server AI throttle of section 5.9 in place of the 3 ms budget (combat at full AI, about the same frame time), and the boot menu for the language and the mods. The menu runs before the loading screen and costs no frame rate; the mods index adds about 1 s to a launch with TSLRCM and M4-78EP (2,783 files and folders, hardware), and a language's talk table is built once, in 2.2 s. Frame rate is as in v0.5.1.
 

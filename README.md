@@ -14,7 +14,7 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.5.2). Core gameplay and the major
+**Playable work in progress (v0.5.3). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
@@ -27,6 +27,8 @@ it boots. v0.5.1 fixes the stock game stopping on the SAVING screen at the end
 of the prologue. v0.5.2 asks which language to play in before the game starts,
 plays the voices of a dubbed PC copy, keeps each mod in its own folder so that
 mods work in every language, and stops party members moonwalking in fights.
+v0.5.3 fixes the frame rate falling to zero on the Harbinger when the stealthed
+Sith assassins appear, and the noise in the reflections of shiny floors.
 Performance tuning and broad playthrough validation remain active.**
 
 ### Working and validated
@@ -176,6 +178,20 @@ What is enabled by default:
     With TSLRCM and M4-78EP, indexing the mods adds about 1 s to each launch,
     and the first launch in a new language about 2 s more to build its talk
     table.
+
+- **New in v0.5.3:**
+  - **Stealth fields no longer stop the game:** on the Harbinger, the frame
+    rate fell to zero a few seconds after the stealthed Sith assassins appeared
+    ([issue #3](https://github.com/pyjabox/VitaKotor2/issues/3)). Every frame
+    with a stealth field, the game attaches its depth buffer to the distortion
+    pass again, and vitaGL answered each attach with a new depth buffer of
+    about 10 MB until memory ran out. The loader now drops an attach
+    that changes nothing.
+  - **Reflections on shiny floors:** the Harbinger's floors showed
+    blue, magenta and white noise. The game uploads each face of its compressed
+    reflection maps twice, and vitaGL, which counts uploads rather than faces,
+    left three of the six faces in uncleared memory. The loader now drops the
+    repeated upload.
 
 ### Remaining limitations
 
