@@ -37,6 +37,7 @@
 
 #include "dynlib.h"
 #include "fs_patch.h"
+#include "threads.h"
 #include "log.h"
 #include "stall_parts.h"
 #include "autotest.h"
@@ -408,6 +409,7 @@ static void *pthread_thread_shim(void *p) {
     g_game_threads[slot].thid = sceKernelGetThreadId();
   log_printf("[thread] started thid=0x%08x entry=%p", (unsigned)sceKernelGetThreadId(),
              (void *)g_game_threads[slot >= 0 ? slot : 0].entry);
+  thread_pin_self(thread_next_worker_mask(), "game-pthread");   /* off the game's core */
   return fn(arg);
 }
 

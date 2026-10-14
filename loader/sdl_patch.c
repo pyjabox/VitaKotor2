@@ -36,6 +36,7 @@
 #include "cansee_cache.h"
 #include "gl_state_filter.h"
 #include "so_util.h"
+#include "threads.h"
 #include "log.h"
 
 extern int ret0(void);   // from dynlib.c
@@ -121,6 +122,7 @@ static int sdl_thread_shim(void *p) {
     g_game_threads[slot].thid = sceKernelGetThreadId();
   log_printf("[thread] SDL thread started thid=0x%08x entry=%p slot=%d",
              (unsigned)sceKernelGetThreadId(), (void *)fn, slot);
+  thread_pin_self(thread_next_worker_mask(), "game-sdl");       /* off the game's core */
   return fn(data);
 }
 

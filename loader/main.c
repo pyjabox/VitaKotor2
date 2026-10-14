@@ -47,6 +47,7 @@
 #include "crash.h"
 #include "heap.h"
 #include "bigalloc.h"
+#include "threads.h"
 #include "log.h"
 #include "gxm_patcher.h"
 
@@ -4636,9 +4637,15 @@ static void *game_main_thread(void *arg) {
 #endif
 
   gl_worker_attach_producer();
-  // The GL worker owns core 2; keep the game thread off it.
+  // The GL worker owns core 2; keep the game thread off it. With THREAD_PINNING
+  // the game thread then gets core 0 to itself (threads.h); cores 0-1 stay the
+  // layout the A/B compares against.
   if (gl_worker_mode() == 2)
     sceKernelChangeThreadCpuAffinityMask(0, SCE_KERNEL_CPU_MASK_USER_0 | SCE_KERNEL_CPU_MASK_USER_1);
+  thread_pin_self(CPU_GAME, "game-main");
+  // vitaGL starts its garbage collector in vglInitExtended; keep it beside the
+  // other helpers rather than wherever the kernel would put it.
+  vglSetupGarbageCollector(0x10000100, thread_mask(CPU_AUX_B));
   log_printf(">>> init vitaGL on game thread");
   vglSetupRuntimeShaderCompiler(SHARK_OPT_UNSAFE, SHARK_ENABLE, SHARK_ENABLE, SHARK_ENABLE);
   // vitaGL's default 1 MB vertex USSE pool fills in a long session; see
@@ -4688,7 +4695,8 @@ int main(int argc, char *argv[]) {
   log_printf("KOTOR II Vita loader starting (initial bring-up)");
 
   sceKernelChangeThreadPriority(0, 127);
-  sceKernelChangeThreadCpuAffinityMask(0, 0x40000);
+  sceKernelChangeThreadCpuAffinityMask(0, CPU_AUX_B);   // parks in pthread_join
+  thread_census_add_ex(sceKernelGetThreadId(), "main", CPU_AUX_B, 0, CPU_AUX_B, 0);
 
   sceCtrlSetSamplingModeExt(SCE_CTRL_MODE_ANALOG_WIDE);
   bootmenu_watch_begin();  // L held from here until the menu would open: it opens

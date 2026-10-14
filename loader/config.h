@@ -636,10 +636,37 @@
 #endif
 // FMOD System::update scans the channels only when an END may be owed
 // (loader/audio_patch.c, g_end_dirty); 0 scans on every call.
+// ---- CPU cores (loader/threads.h, from the KOTOR I loader) ---------------------
+// THREAD_PINNING 1: the game thread gets core 0 to itself, the audio mixer core 1
+// at AUDIO_MIXER_PRIORITY, the game's workers alternate cores 2 and 1, and the GL
+// worker, parked main thread and vitaGL's garbage collector stay on core 2.
+// 0 is the layout of v0.5.5 and earlier. THREAD_PINNING_AB test builds switch
+// between the two every 10 s.
+#ifndef THREAD_PINNING
+#define THREAD_PINNING            0
+#endif
+#ifndef THREAD_PINNING_AB
+#define THREAD_PINNING_AB         0
+#endif
+// The audio mixer's priority with pinning on: one step above the default. It
+// sleeps in sceAudioOutOutput most of the time, so ranking it above the game's
+// workers (which share its core) costs them little. If the kernel refuses the
+// value the mixer falls back to the default.
+#define AUDIO_MIXER_PRIORITY      0x100000F0
 // Count the files and folders the process holds open (loader/fdtrack.c): an
 // [fd] line every 30 s, and any failed open other than "not there".
 #ifndef FD_TRACK
 #define FD_TRACK                  1
+#endif
+// Audio output in two buffers taken in turn, as SDL's Vita backend does
+// (loader/audio_patch.c). It did not remove issue #5's noise. 0 is the single
+// buffer of v0.5.5 and earlier; AUDIO_DOUBLE_BUFFER_AB test builds switch
+// between the two every 10 s.
+#ifndef AUDIO_DOUBLE_BUFFER
+#define AUDIO_DOUBLE_BUFFER       1
+#endif
+#ifndef AUDIO_DOUBLE_BUFFER_AB
+#define AUDIO_DOUBLE_BUFFER_AB    0
 #endif
 // Test builds: the audio output thread alternates between the default priority
 // and AUDIO_PRIO_HIGH every 10 s, logging output gaps per window ([snd-gap]).

@@ -28,6 +28,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "threads.h"
 #include "log.h"
 #include "stall_parts.h"
 #include "gl_worker.h"
@@ -995,6 +996,7 @@ void gl_worker_init(void) {
       log_printf("[glw] worker start FAILED (0x%x): running inline", rc);
       glw_ro.mode = 1;
     } else {
+      thread_census_add_ex(th, "gl-worker", GL_WORKER_CPU_MASK, 0, GL_WORKER_CPU_MASK, 0);
       while (!glw_ro.worker_key) sceKernelDelayThread(1000);
     }
   }

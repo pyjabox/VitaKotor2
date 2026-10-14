@@ -70,6 +70,8 @@
 #include "opensl_patch.h"
 #include "bigalloc.h"
 #include "sdl_patch.h"
+#include "fdtrack.h"
+#include "threads.h"
 #include "log.h"
 #include "stall_parts.h"
 
@@ -952,7 +954,15 @@ static unsigned g_lim_grains = 0, g_lim_clipped = 0;
 static int32_t  g_lim_peak = 0;
 
 static int32_t g_acc[OUT_GRAIN * OUT_CH];
-static int16_t g_out[OUT_GRAIN * OUT_CH];
+/* Two output buffers, taken in turn (AUDIO_DOUBLE_BUFFER), as SDL's Vita
+ * backend does: if the port reads the buffer while it plays, mixing the next
+ * grain into the one just handed over would overwrite the grain still playing.
+ * It was tried for the noise behind sound in busy scenes (issue #5) and did not
+ * remove it, but costs nothing. 64-byte aligned for the port's DMA. */
+static int16_t g_out_buf[2][OUT_GRAIN * OUT_CH] __attribute__((aligned(64)));
+static int16_t *g_out = g_out_buf[0];
+static unsigned g_out_cur;
+static int g_out_double = AUDIO_DOUBLE_BUFFER;   /* AUDIO_DOUBLE_BUFFER_AB flips it */
 
 static void mix_grain(void) {
   memset(g_acc, 0, sizeof g_acc);
@@ -1348,6 +1358,8 @@ static int audio_thread(SceSize args, void *argp) {
 #endif
     sceAudioOutOutput(g_port, g_out);   /* blocks until the grain is consumed */
     SceUInt64 g2 = sceKernelGetProcessTimeWide();
+    /* The port now plays g_out: mix the next grain into the other buffer. */
+    if (g_out_double) { g_out_cur ^= 1u; g_out = g_out_buf[g_out_cur]; }
     uint64_t out_us = g2 - g1;
     g_ph_out_us += out_us;
     if (out_us > g_ph_out_max) g_ph_out_max = out_us;
@@ -1375,16 +1387,32 @@ static int audio_thread(SceSize args, void *argp) {
     prev_ret_c = c2;
 
     if (g2 - w_t0 >= 10000000u) {
-      if (AUDIO_PRIO_AB || AUDIO_VOICE_DIAG || w_gaps)
-        log_printf("[snd-gap] %s%u grains: %u gaps, %llu ms in all, worst %llu ms; late time off-core %llu%% | "
+      if (AUDIO_PRIO_AB || AUDIO_VOICE_DIAG || THREAD_PINNING_AB || AUDIO_DOUBLE_BUFFER_AB || w_gaps)
+        log_printf("[snd-gap] %s%s%s%u grains: %u gaps, %llu ms in all, worst %llu ms; late time off-core %llu%% | "
                    "mix avg %llu us, worst %llu us | limiter below unity in %u grains, lowest gain %.3f",
-                   AUDIO_PRIO_AB ? (high ? "HIGH " : "DEFAULT ") : "", w_grains, w_gaps,
+                   AUDIO_PRIO_AB ? (high ? "HIGH " : "DEFAULT ") : "",
+                   THREAD_PINNING_AB ? (thread_layout_pinned() ? "PINNED " : "OLD ") : "",
+                   AUDIO_DOUBLE_BUFFER_AB ? (g_out_double ? "DOUBLE " : "SINGLE ") : "", w_grains, w_gaps,
                    (unsigned long long)(w_gap_us / 1000u), (unsigned long long)(w_gap_max / 1000u),
                    (unsigned long long)(w_gap_us ? w_gap_off_us * 100u / (w_gap_us + w_gaps * grain_us) : 0),
                    (unsigned long long)(w_mix_us / w_grains), (unsigned long long)w_mix_max,
                    g_lw_on, (double)g_lw_min);
       g_lw_on = 0;
       g_lw_min = 1.0f;
+      /* Which core is busy, and with what: every window in A/B builds (the
+       * layout just measured), every third (30 s) otherwise. */
+      {
+        static unsigned cpu_win = 0;
+        if (THREAD_PINNING_AB || cpu_win % 3 == 0) thread_census_log();
+        if (cpu_win++ % 3 == 0) fdtrack_report();
+      }
+#if THREAD_PINNING_AB
+      thread_layout_apply(!thread_layout_pinned());
+#endif
+#if AUDIO_DOUBLE_BUFFER_AB
+      g_out_double = !g_out_double;
+      if (!g_out_double) { g_out_cur = 0; g_out = g_out_buf[0]; }   /* v0.5.5: one buffer */
+#endif
       w_t0 = g2;
       w_grains = w_gaps = 0;
       w_gap_us = w_gap_max = w_gap_off_us = w_mix_us = w_mix_max = 0;
@@ -1414,8 +1442,17 @@ static void audio_start(void) {
                        SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vol);
   audio_mp3_init_library();
   g_running = 1;
-  g_thread = sceKernelCreateThread("kotor_snd", audio_thread, 0x10000100, 0x10000,
-                                    0, 0, NULL);
+  g_thread = sceKernelCreateThread("kotor_snd", audio_thread,
+                                   THREAD_PINNING ? AUDIO_MIXER_PRIORITY : 0x10000100, 0x10000,
+                                   0, thread_mask(CPU_AUX_A), NULL);
+  if (g_thread < 0 && THREAD_PINNING) {   /* never lose sound over the priority */
+    log_printf("[snd] mixer priority 0x%x refused (0x%08X) -- using the default",
+               (unsigned)AUDIO_MIXER_PRIORITY, (unsigned)g_thread);
+    g_thread = sceKernelCreateThread("kotor_snd", audio_thread, 0x10000100, 0x10000,
+                                     0, thread_mask(CPU_AUX_A), NULL);
+  }
+  thread_census_add_ex(g_thread, "audio-mixer", CPU_AUX_A, AUDIO_MIXER_PRIORITY,
+                       SCE_KERNEL_CPU_MASK_USER_ALL, 0x10000100);
   if (g_thread < 0) {
     log_printf("[snd] output thread create failed 0x%08X", (unsigned)g_thread);
     g_running = 0;
