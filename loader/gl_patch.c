@@ -1510,12 +1510,15 @@ static uint8_t tex_kind_get(GLuint t) {
   return (t && t < TEXKIND_MAX) ? g_tex_kind[t] : TEXKIND_NONE;
 }
 
+static void cubeup_forget(GLuint id);
 static void glDeleteTextures_e(GLsizei n, const GLuint *tex) {
   /* ids are recycled, so any cached binding may now mean a different texture */
   if (tex)
     for (GLsizei i = 0; i < n; i++) {
-      if (tex_kind_get(tex[i]) == TEXKIND_CUBE)
+      if (tex_kind_get(tex[i]) == TEXKIND_CUBE) {
         log_printf("[GL] cube texture %u deleted", (unsigned)tex[i]);
+        cubeup_forget(tex[i]);
+      }
       if (tex[i] && tex[i] < TEXKIND_MAX) g_tex_kind[tex[i]] = TEXKIND_NONE;
       tex_release(tex[i]);
       for (unsigned u = 0; u < GL_MAX_TEXUNITS; u++)
@@ -1795,6 +1798,70 @@ static void tex_upload2d_body(GLenum tg, GLint l, GLint ifmt, GLsizei w, GLsizei
   glTexImage2D(tg, l, ifmt, w, h, b, f, ty, px);
 }
 
+/* Cube maps the game ships compressed reach us decoded to RGBA, and each face's
+ * base level comes twice in a row: ASLgl's glCompressedTexImage2D uploads the
+ * decoded level 0, then gluBuild2DMipmaps uploads it again with the chain. Every
+ * log with cube uploads shows 12 base uploads per RGBA cube against 6 per RGB
+ * one. vitaGL 38d2f97 does not track faces, it counts base uploads: the seventh
+ * (gpu_alloc_cube_texture, faces_counter >= 6) frees the cube and starts a new
+ * block that it never clears. Faces 3 to 5 then land in the new block, and +X,
+ * -X and +Y show whatever memory was there: the noise in shiny floors and
+ * armour. A base upload of a face already uploaded in this round, with the same
+ * pixels, changes nothing but that count, so it is dropped. */
+#define CUBEUP_MAX 32
+static struct {
+  GLuint id;
+  uint8_t count;           /* vitaGL's faces_counter for this texture, mirrored */
+  uint8_t faces, known;    /* faces uploaded since that count restarted; with pixels we hashed */
+  GLsizei w, h; GLenum f;
+  uint32_t sum[6];
+} s_cubeup[CUBEUP_MAX];
+static unsigned s_cubeup_next, s_cubeup_dropped, s_cubeup_differs;
+static uint32_t cubeup_sum(const void *px, uint32_t n) {
+  const uint8_t *p = (const uint8_t *)px;
+  uint32_t h = 2166136261u, i = 0;
+  for (; i + 4 <= n; i += 4) { uint32_t v; memcpy(&v, p + i, 4); h = (h ^ v) * 16777619u; }
+  for (; i < n; i++) h = (h ^ p[i]) * 16777619u;
+  return h;
+}
+static void cubeup_forget(GLuint id) {
+  for (unsigned i = 0; i < CUBEUP_MAX; i++)
+    if (s_cubeup[i].id == id) s_cubeup[i].id = 0;
+}
+/* 1 when this base-level face upload repeats one vitaGL already has. */
+static int cubeup_redundant(GLuint id, unsigned face, GLsizei w, GLsizei h, GLenum f, GLenum ty, const void *px) {
+  if (!id || face > 5) return 0;
+  unsigned i;
+  for (i = 0; i < CUBEUP_MAX && s_cubeup[i].id != id; i++) {}
+  if (i == CUBEUP_MAX) {
+    i = s_cubeup_next++ % CUBEUP_MAX;
+    memset(&s_cubeup[i], 0, sizeof s_cubeup[i]);
+    s_cubeup[i].id = id;
+  }
+  /* Only plain RGB/RGBA pixels are compared; anything else is let through. */
+  int hashed = px && ty == GL_UNSIGNED_BYTE && (f == GL_RGBA || f == GL_RGB) && w > 0 && h > 0;
+  uint32_t sum = hashed ? cubeup_sum(px, (uint32_t)w * (uint32_t)h * (f == GL_RGBA ? 4u : 3u)) : 0;
+  uint8_t bit = (uint8_t)(1u << face);
+  if (hashed && (s_cubeup[i].known & bit) && s_cubeup[i].sum[face] == sum &&
+      s_cubeup[i].w == w && s_cubeup[i].h == h && s_cubeup[i].f == f) {
+    if (++s_cubeup_dropped <= 4 || s_cubeup_dropped % 64 == 0)
+      log_printf("[cubeup] texture %u face %u: base level uploaded again with the same pixels, dropped (%u so far)",
+                 (unsigned)id, face, s_cubeup_dropped);
+    return 1;
+  }
+  if ((s_cubeup[i].faces & bit) && s_cubeup[i].count < 6 && ++s_cubeup_differs <= 16)
+    log_printf("[cubeup] WARNING texture %u face %u: base level uploaded again with other pixels "
+               "before the sixth face; vitaGL will start a new block early", (unsigned)id, face);
+  /* What vitaGL does with it: the seventh base upload starts a new block. */
+  s_cubeup[i].count = s_cubeup[i].count >= 6 ? 1 : s_cubeup[i].count + 1;
+  if (s_cubeup[i].count == 1) s_cubeup[i].faces = s_cubeup[i].known = 0;
+  s_cubeup[i].faces |= bit;
+  if (hashed) s_cubeup[i].known |= bit; else s_cubeup[i].known &= (uint8_t)~bit;
+  s_cubeup[i].sum[face] = sum;
+  s_cubeup[i].w = w; s_cubeup[i].h = h; s_cubeup[i].f = f;
+  return 0;
+}
+
 static void glTexImage2D_e(GLenum tg, GLint l, GLint ifmt, GLsizei w, GLsizei h, GLint b, GLenum f, GLenum ty, const void *px) {
   GLLOG("glTexImage2D(0x%x, l=%d, %dx%d, fmt=0x%x)", (unsigned)tg, l, (int)w, (int)h, (unsigned)f);
   g_texupload_frame++;
@@ -1819,6 +1886,8 @@ static void glTexImage2D_e(GLenum tg, GLint l, GLint ifmt, GLsizei w, GLsizei h,
                  (unsigned)(tg - GL_TEXTURE_CUBE_MAP_POSITIVE_X), l, (int)w, (int)h,
                  (unsigned)ifmt, (unsigned)f, px ? "yes" : "NULL", faces);
     nc++;
+    if (l == 0 && cubeup_redundant(g_cur_cubetex, (unsigned)(tg - GL_TEXTURE_CUBE_MAP_POSITIVE_X), w, h, f, ty, px))
+      return;
     tex_charge(g_cur_cubetex, tg, l, w, h, fmt_bpp(f));   /* cubes bind their own id */
     glTexImage2D(tg, l, ifmt, w, h, b, f, ty, px);
     return;                        // none of the 2D heuristics below apply
