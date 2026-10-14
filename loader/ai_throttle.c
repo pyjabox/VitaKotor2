@@ -14,16 +14,22 @@
  * and turned to face their target late -- party members "moonwalked" to it.
  *
  * This hook (GetNextObject's relocation slot, from UpdateState's call site
- * only) keeps the engine's budget for level 4 and limits the rest:
+ * only) only ever delays an AIUpdate, by a bounded number of frames:
  *  - level 4 is never touched;
- *  - below it, an object that is not a creature with an action queued or in a
- *    walking state 4-6 (the walk pass's own test) is updated once every
- *    AI_THROTTLE_PERIOD frames, the others are skipped in the round robin;
- *  - below it, once the frame's AI has run AI_THROTTLE_CAP_US, GetNextObject
- *    answers NULL, which ends that level's loop for the frame without moving
- *    its cursor; each frame the lower levels still get AI_THROTTLE_MIN_LOWER_US
- *    after level 4.
- * Perception and heartbeats are on the engine's own timers.
+ *  - below it, an object with an action queued (a creature, or a door its
+ *    script told to open) or a creature in a walking state 4-6 (the walk
+ *    pass's own test) is updated every frame; any other object once every
+ *    AI_THROTTLE_PERIOD frames, skipped in the round robin in between;
+ *  - the engine's own budget (10 ms, 60% of what is left to each level) stays
+ *    the only time limit, as in the original game.
+ * An AIUpdate is where an object runs its queued actions, heartbeat script,
+ * effect expiry and, for an area of effect or an encounter, its checks; the
+ * heartbeat and effects are on world time, so a delay of two frames is all
+ * they see. v0.5.2 also stopped the lower levels for the frame once the AI had
+ * run 3 ms. That saved about 5 ms in a Dxun fight, but it dropped work: in
+ * Peragus's dormitories (105PER) levels 3 to 1 used the 3 ms every frame and
+ * the lowest level got no AIUpdate in 584 frames out of 585, so the airlock's
+ * inner door, told to open by its own OnFailToOpen script, never did.
  *
  * UpdateState ends a level's loop when GetNextObject returns NULL or comes back
  * to the frame's first object, so NULL is passed straight through, the first
@@ -36,6 +42,7 @@
 
 #include <vitasdk.h>
 #include <kubridge.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "config.h"
@@ -51,7 +58,7 @@
 #define LEVELS_N 8
 
 typedef struct { const void *obj; uint32_t frame; } last_t;
-typedef struct { const void *list; uint32_t frame; const void *marker; } level_t;
+typedef struct { const void *list; uint32_t frame; const void *marker; uint32_t got; } level_t;
 
 static last_t s_last[LAST_N];
 static level_t s_level[LEVELS_N];
@@ -62,7 +69,7 @@ static int s_installed, s_on = 1, s_ab;
 static void *(*s_orig)(void *list);
 static uint64_t s_t_first, s_t_last, s_lower_t0, s_window_t0;
 
-static uint32_t w_frames, w_updates, w_top, w_skipped, w_capped;
+static uint32_t w_frames, w_updates, w_top, w_skipped;
 static uint64_t w_us, w_top_us;
 
 static last_t *last_slot(const void *obj) {
@@ -89,11 +96,78 @@ static int creature_active(void *obj) {
   return state >= 4 && state <= 6;
 }
 
+/* Any server object: AsSWSObject (vtable +0x14) is NULL for areas and the
+ * module, which are not CSWSObjects; the action queue is CSWSObject+0x100, as
+ * CSWSObject::RunActions reads it. */
+static uint8_t *as_object(void *obj) {
+  void *(*f)(void *) = (*(void *(***)(void *))obj)[0x14 / 4];
+  return f(obj);
+}
+static int queued(const uint8_t *o) {
+  void **queue = *(void ***)(o + 0x100);
+  return queue && *queue && *(void **)((uint8_t *)*queue + 8);
+}
+
 static int must_update(void *obj) {
   last_t *e = last_slot(obj);
   if (e->obj != obj || s_frame - e->frame >= s_period) return 1;
-  return ((const uint8_t *)obj)[8] == TYPE_CREATURE && creature_active(obj);
+  if (((const uint8_t *)obj)[8] == TYPE_CREATURE) return creature_active(obj);
+  uint8_t *o = as_object(obj);
+  return o && queued(o);
 }
+
+#ifndef AI_THROTTLE_TRACE
+#define AI_THROTTLE_TRACE 0
+#endif
+#if AI_THROTTLE_TRACE
+/* Diagnostic (AI_THROTTLE_TRACE): objects other than creatures with an action
+ * queued -- a door told to open by its own script, say -- and what the throttle
+ * does with them: skipped, updated, and how long until the queue is empty. */
+#define TRACE_N 32
+typedef struct { const void *obj; uint32_t first, skips, upds, last_upd; } trace_t;
+static trace_t s_trace[TRACE_N];
+static unsigned s_trace_lines;
+static const char *tag_of(const uint8_t *o) {
+  const char *t = *(const char *const *)(o + 0x18);   /* CExoString m_sTag */
+  return t ? t : "";
+}
+static void trace_note(void *obj, int updated, int top) {
+  if (((const uint8_t *)obj)[8] == TYPE_CREATURE) return;
+  uint8_t *o = as_object(obj);
+  if (!o) return;
+  trace_t *t = NULL;
+  for (int i = 0; i < TRACE_N; i++) if (s_trace[i].obj == obj) { t = &s_trace[i]; break; }
+  if (!queued(o)) {
+    if (t) {
+      if (s_trace_lines++ < 200)
+        log_printf("[aithrottle] trace: %s (id %08x) queue empty at frame %u, %u frames after the action "
+                   "(%u updates, %u skips)", tag_of(o), *(const uint32_t *)((const uint8_t *)obj + 4),
+                   s_frame, s_frame - t->first, t->upds, t->skips);
+      t->obj = NULL;
+    }
+    return;
+  }
+  if (!t) {
+    for (int i = 0; i < TRACE_N && !t; i++) if (!s_trace[i].obj) t = &s_trace[i];
+    if (!t) return;
+    memset(t, 0, sizeof *t);
+    t->obj = obj; t->first = s_frame;
+    if (s_trace_lines++ < 200)
+      log_printf("[aithrottle] trace: %s (id %08x, type %u, %s level) has an action queued, frame %u",
+                 tag_of(o), *(const uint32_t *)((const uint8_t *)obj + 4), ((const uint8_t *)obj)[8],
+                 top ? "top" : "lower", s_frame);
+  }
+  if (updated) {
+    t->upds++;
+    if (t->upds <= 12 && s_trace_lines++ < 200)
+      log_printf("[aithrottle] trace: %s updated at frame %u (%u frames after the action, %u skips so far)",
+                 tag_of(o), s_frame, s_frame - t->first, t->skips);
+    t->last_upd = s_frame;
+  } else {
+    t->skips++;
+  }
+}
+#endif
 
 static void *gno_hook(void *list) {
   uintptr_t ra = (uintptr_t)__builtin_return_address(0) & ~(uintptr_t)1;
@@ -105,15 +179,7 @@ static void *gno_hook(void *list) {
   if ((uintptr_t)list > s_top_list) s_top_list = (uintptr_t)list;
   int top = (uintptr_t)list == s_top_list;
 
-  if (!top) {
-    if (!s_lower_t0) { s_lower_t0 = now; w_top_us += now - s_t_first; }
-    if (s_on) {
-      uint64_t deadline = s_t_first + AI_THROTTLE_CAP_US;
-      if (deadline < s_lower_t0 + AI_THROTTLE_MIN_LOWER_US)
-        deadline = s_lower_t0 + AI_THROTTLE_MIN_LOWER_US;
-      if (now > deadline) { w_capped++; return NULL; }
-    }
-  }
+  if (!top && !s_lower_t0) { s_lower_t0 = now; w_top_us += now - s_t_first; }
 
   level_t *L = level_slot(list);
   int first = L->frame != s_frame;
@@ -124,13 +190,24 @@ static void *gno_hook(void *list) {
     int n = ((const int *)list)[1];
     for (int k = 0; k < n && obj && obj != L->marker && !must_update(obj); k++) {
       w_skipped++;
+#if AI_THROTTLE_TRACE
+      trace_note(obj, 0, top);
+#endif
       obj = s_orig(list);
     }
   }
   if (!obj) { if (first) L->marker = NULL; return NULL; }
-  if (first) L->marker = obj;
+  if (first) {
+    L->marker = obj;
+#if AI_THROTTLE_TRACE
+    L->got++;
+#endif
+  }
   else if (obj == L->marker) return obj;        /* back at the start: the level is done */
 
+#if AI_THROTTLE_TRACE
+  trace_note(obj, 1, top);
+#endif
   last_t *e = last_slot(obj);
   e->obj = obj;
   e->frame = s_frame;
@@ -177,9 +254,8 @@ void ai_throttle_install(unsigned period, int ab) {
     }
   }
   s_installed = 1;
-  log_printf("[aithrottle] armed: below level 4, idle objects every %u frames, AI capped at %u us "
-             "(at least %u us after level 4)%s", s_period, (unsigned)AI_THROTTLE_CAP_US,
-             (unsigned)AI_THROTTLE_MIN_LOWER_US,
+  log_printf("[aithrottle] armed: below level 4, idle objects every %u frames, objects with an action "
+             "queued or walking every frame, no time limit of its own%s", s_period,
              s_ab ? "; A/B: alternates with the engine's own every 10 s" : "");
 }
 
@@ -192,12 +268,26 @@ void ai_throttle_on_swap(void) {
   if (!s_window_t0) s_window_t0 = now;
   if (now - s_window_t0 < 10000000u) return;
   log_printf("[aithrottle] %s%u frames: updates %.1f/frame (level 4: %.1f), skipped %.1f, "
-             "cut %.1f, level 4 %.2f ms, AI %.2f ms/frame (first to last request)",
+             "level 4 %.2f ms, AI %.2f ms/frame (first to last request)",
              s_ab ? (s_on ? "THROTTLE " : "FULL ") : "", w_frames,
-             (double)w_updates / w_frames, (double)w_top / w_frames,
-             (double)w_skipped / w_frames, (double)w_capped / w_frames,
+             (double)w_updates / w_frames, (double)w_top / w_frames, (double)w_skipped / w_frames,
              (double)w_top_us / w_frames / 1000.0, (double)w_us / w_frames / 1000.0);
-  w_frames = w_updates = w_top = w_skipped = w_capped = 0;
+#if AI_THROTTLE_TRACE
+  {
+    char lv[160];
+    int w = 0;
+    lv[0] = 0;
+    for (int i = 0; i < LEVELS_N && w < (int)sizeof lv - 24; i++)
+      if (s_level[i].list && (uintptr_t)s_level[i].list != s_top_list) {
+        w += snprintf(lv + w, sizeof lv - (size_t)w, " %08x:%u", (unsigned)(uintptr_t)s_level[i].list,
+                      (unsigned)s_level[i].got);
+        s_level[i].got = 0;
+      }
+    log_printf("[aithrottle] trace: frames in which each lower level got an update, of %u (list:frames):%s",
+               w_frames, lv);
+  }
+#endif
+  w_frames = w_updates = w_top = w_skipped = 0;
   w_us = w_top_us = 0;
   s_window_t0 = now;
   if (s_ab) s_on = !s_on;

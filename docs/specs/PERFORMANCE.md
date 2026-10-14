@@ -25,7 +25,7 @@ The largest confirmed improvements are:
 12. **GL worker thread (section 5.7):** vitaGL runs on core 2. The game thread records commands instead, at about 4.5 ms per frame instead of about 8 ms. Frame at the busy spot: 61.7–63.7 → 58.5 ms.
 13. **No shadows (section 9.2):** about 4.4 ms and 80 draws per frame in a busy scene. The loader sets the game's own `Shadows=0` in `swkotor2.ini`.
 14. **FMOD update skip (section 5.8):** the game calls `System::update` about 50 times per frame; the loader now scans its channels only when a sound has ended. About 1 ms per frame.
-15. **Server AI (section 5.9):** the AI master spent its full 10 ms budget every frame. A 3 ms budget brought it to 3.4–5.3 ms but delayed creatures in combat ("moonwalk"); since v0.5.2 `ai_throttle.c` limits only what is not in combat: about 5.3 ms in a Dxun fight, against 10.2 ms.
+15. **Server AI (section 5.9):** the AI master spent its full 10 ms budget every frame. A 3 ms budget brought it to 3.4–5.3 ms but delayed creatures in combat ("moonwalk"); v0.5.2 and v0.5.3 limited only what is not in combat (`ai_throttle.c`): about 5.3 ms in a Dxun fight, against 10.2 ms. That limit could stop the lowest AI level for good and was removed after v0.5.3 (section 5.9): fights cost what they did in v0.5.1 again.
 16. **Release candidate 1, released as v0.3.0 (2026-10-04)**, all of the above on top of item 11:
     - the busy spot runs at 49–53 ms per frame (~19–20 FPS), against ~62 ms before;
     - light scenes (140–155 draws) run at 27–30 ms (34–37 FPS);
@@ -395,6 +395,18 @@ Skipping alone saved nothing in the Dxun fight: the AI filled its 10 ms even in 
 | Frame | about 45 ms | about 39 ms |
 
 No moonwalk in either. `ux0:data/kotor2/ai_mode.txt` containing `0` turns off the throttle and both AI caches.
+
+**Cap removed after v0.5.3 (2026-10-14).** In Peragus's dormitories (105PER, stock game) the airlock's inner door stayed shut. Trying it runs its `OnFailToOpen` script, `a_airlockin`, which queues `ActionOpenDoor` on the door itself; a door runs its queued actions in `CSWSDoor::AIUpdate`. There, levels 3 to 1 used the 3 ms every frame, and a trace build showed the lowest level getting no `AIUpdate` in 584 frames out of 585: the door never ran the action. With `ai_mode.txt` `0` it opened. The cap could do the same to anything on a starved level: queued actions, heartbeat scripts, effect expiry, encounter spawns.
+
+`ai_throttle.c` now only delays: level 4 untouched; below it, an object with an action queued (any `CSWSObject`: `AsSWSObject` at vtable +0x14, queue at +0x100 as `CSWSObject::RunActions` reads it) or a creature walking is updated every frame, any other object every third frame; the engine's 10 ms budget is the only time limit. Hardware A/B in the Dxun fight, 10 s windows (`ai_mode.txt` `a`):
+
+| | Original (10 ms) | Throttle without the cap |
+|---|---:|---:|
+| AI per frame | 10.2–12.5 ms | 9.7–12.8 ms |
+| Updates per frame | 60–74 | 49–110 |
+| Level 4 | 1.8–2.1 ms | 1.2–3.2 ms |
+
+As before, skipping alone saves nothing in a fight: the engine fills its budget either way. The airlock opened. Each occupied lower level got an update in every frame with the engine's own AI, and in 78–100% of frames with the throttle: `GetNextObject` answers NULL for an entry whose object is gone or of a type it does not update, which ends the level for the frame in both cases, and skipping reaches such entries more often. The level's cursor has moved past the entry, so the next frame goes on from there.
 
 ### 5.10 Native DXT texture uploads
 
@@ -806,6 +818,8 @@ rendering defects.
 | v0.5.3 eboot | `4a049a7047606a71180cd5c6a926a84de4b1149de1c449834154793870dee82e` |
 
 ## 15. Current decision
+
+On main after v0.5.3: the server AI throttle without its 3 ms limit (section 5.9). Scripted objects on the lowest AI level work again; busy fights cost about 5 ms more AI per frame than in v0.5.2 and v0.5.3, as in v0.5.1.
 
 v0.5.3 is v0.5.2 with two fixes in the GL layer (loader/gl_patch.c). An attach of the depth renderbuffer already attached to a framebuffer is dropped: the distortion pass of stealth fields re-attached it every frame, and vitaGL allocated a new depth buffer each time, until glClear's scene start took 7 s per frame on hardware (issue #3). A cube-map face uploaded again with the same pixels is dropped: compressed reflection maps arrive twice per face, and vitaGL's upload count then left three faces in uncleared memory. Both changes only drop calls; frame rate elsewhere was not measured again.
 

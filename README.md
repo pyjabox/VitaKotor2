@@ -98,11 +98,14 @@ What is enabled by default:
   - **AI caches:** walk-pass and line-of-sight results are reused (about
     1.6 ms per frame).
   - **Server AI spent on what matters:** creatures in combat, acting or
-    walking are updated every frame; idle creatures, placeables, doors and
-    items every third frame at most, within about 3 ms per frame (a Dxun
-    fight: 10.2 → about 5.3 ms of AI per frame). Until v0.5.1 a 3 ms budget
-    for all of it delayed creatures in combat, which made them walk to their
-    targets without turning ("moonwalk").
+    walking, and objects with a scripted order waiting are updated every
+    frame; idle creatures, placeables, doors and items every third frame.
+    Until v0.5.1 a 3 ms budget for all of it delayed creatures in combat,
+    which made them walk to their targets without turning ("moonwalk").
+    v0.5.2 and v0.5.3 limited everything outside combat to about 3 ms per
+    frame instead (a Dxun fight: 10.2 → about 5.3 ms of AI per frame), which
+    could stop scripted objects for good; since then the AI has no limit of
+    its own, as in v0.5.1.
   - **Audio update:** the FMOD channel scan, which runs about 50 times per
     frame, is skipped when no sound has ended (about 1 ms per frame).
   - **Mobile bloom skipped** (GPU 36 → 22 ms per frame, no visible difference
@@ -193,6 +196,16 @@ What is enabled by default:
     left three of the six faces in uncleared memory. The loader now drops the
     repeated upload.
 
+- **On main since v0.5.3 (not yet in a release):**
+  - **Scripted doors and objects no longer stop in busy areas:** in Peragus's
+    dormitories, the airlock's inner door stayed shut. Its script tells it to
+    open, but the server AI's 3 ms limit stopped the lower AI levels every
+    frame there, and the lowest one, with the door, got no update at all. The
+    limit is gone: an idle object waits at most two frames for its update, and
+    anything with an order waiting is updated every frame. Busy fights cost
+    what they did in v0.5.1: about 5 ms more AI per frame than v0.5.2 in a Dxun
+    fight (frames about 45 ms instead of 39 ms).
+
 ### Remaining limitations
 
 | Area | Current behavior |
@@ -201,7 +214,7 @@ What is enabled by default:
 | Performance | Heavy scenes remain CPU-bound, mostly in the engine's per-object rendering work: about 19–20 FPS in the busiest tested scenes. A 10 m distance filter can reduce draws further but remains too experimental for releases. See the [performance reference](docs/specs/PERFORMANCE.md). |
 | Visual changes | There are no dynamic shadows: the loader sets the game's own `Shadows=0` (and `Soft Shadows=0`) in `swkotor2.ini` at every launch. The in-game option still works until the next launch. The mobile bloom passes are skipped (no game option controls them). Rooms keep their baked lighting. |
 | Languages | The menu before the game is in English. In a language other than English, mods' additions can be English: see [Mods and languages](#mods-and-languages). |
-| AI updates | Creatures in combat, acting or walking get their AI update every frame. Idle creatures, placeables, doors and items are updated less often (every third frame at most, and the AI outside combat stops after about 3 ms per frame). Nothing was noticed in testing, but idle characters in very crowded scenes may react slightly later. |
+| AI updates | Creatures in combat, acting or walking, and objects with a scripted order waiting get their AI update every frame. Idle creatures, placeables, doors and items are updated every third frame. Nothing was noticed in testing, but idle characters may react up to two frames later. |
 | Audio | Known issue: some sounds can cut in and out. Under investigation. |
 | Latency | The GL worker lets the game run up to one frame ahead of the display. An object stepping out from cover can appear up to three frames late (occlusion culling). |
 | Hitches | Occasional single frames of about 0.12–0.23 s remain when new content is first read from the memory card (about 10 MB/s): the minimap's first draw, dialog entries and their voices, creatures spawned by scripts. Loading-screen images still take about 0.1–0.35 s each. |

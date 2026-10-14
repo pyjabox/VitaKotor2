@@ -648,17 +648,15 @@
 #ifndef AI_BUDGET_US
 #define AI_BUDGET_US              3000
 #endif
-// Server AI time (loader/ai_throttle.c), below AI level 4 only: objects that
-// are not creatures with an action queued or walking get an AIUpdate once every
-// AI_THROTTLE_PERIOD frames, and these levels stop once the frame's AI has run
-// AI_THROTTLE_CAP_US (but get AI_THROTTLE_MIN_LOWER_US after level 4 each
-// frame). Level 4 keeps the engine's own budget. Dxun fight: AI 10.2 -> ~5.3
-// ms per frame. ux0:data/kotor2/ai_mode.txt containing 0 turns it off.
+// Server AI (loader/ai_throttle.c), below AI level 4 only: an object with no
+// action queued that is not walking gets its AIUpdate once every
+// AI_THROTTLE_PERIOD frames instead of every frame. It never drops an update;
+// the engine's own budget stays the only time limit.
+// ux0:data/kotor2/ai_mode.txt containing 0 turns it off, a alternates it with
+// the engine's own every 10 s.
 #ifndef AI_THROTTLE_PERIOD
 #define AI_THROTTLE_PERIOD        3
 #endif
-#define AI_THROTTLE_CAP_US        3000
-#define AI_THROTTLE_MIN_LOWER_US  1000
 // The game's DXT textures are uploaded compressed instead of decoded to RGBA on
 // the CPU by ASLgl (loader/dxt_native.c).
 #ifndef DXT_NATIVE
