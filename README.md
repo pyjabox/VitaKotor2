@@ -208,6 +208,15 @@ What is enabled by default:
     what they did in v0.5.1: about 5 ms more AI per frame than v0.5.2 in a Dxun
     fight (frames about 45 ms instead of 39 ms).
 
+- **On main since v0.5.4 (not yet in a release):**
+  - **No more black screen on Telos after the Batu Rem fight:** loading the
+    apartments crashed in vitaGL
+    ([issue #4](https://github.com/pyjabox/VitaKotor2/issues/4)). When the game
+    deletes a buffer that is still bound, GL resets the binding, but vitaGL kept
+    the deleted buffer bound, so the loading screen's next draw read its
+    indices through it. The loader now unbinds a buffer before the game
+    deletes it.
+
 ### Remaining limitations
 
 | Area | Current behavior |

@@ -741,6 +741,11 @@ static uint64_t g_tex16_saved = 0;          /* bytes NOT spent, lifetime */
 
 static GLuint g_cur_arraybuf = 0;        /* last glBindBuffer(GL_ARRAY_BUFFER) */
 static GLuint g_cur_elementbuf = 0;      /* last GL_ELEMENT_ARRAY_BUFFER */
+/* Set when the bound index buffer was deleted (see glDeleteBuffers_e), until
+ * the game binds another one: a draw with indices in memory meanwhile is one
+ * v0.5.4 crashed on. Counted for the [glbuf] line. */
+static int g_elem_deleted_bound;
+static unsigned g_glbuf_unbinds, g_glbuf_saved_draws;
 #define GL_ATTRIB_TRACK_MAX 16
 static uint32_t g_attrib_enabled;
 static struct {
@@ -853,6 +858,12 @@ static void glDrawElements_t(GLenum mode, GLsizei count, GLenum type, const void
   g_draws_total++;
 #endif
 #endif
+  if (g_elem_deleted_bound && idx && !g_cur_elementbuf) {
+    if (++g_glbuf_saved_draws <= 4 || g_glbuf_saved_draws % 256 == 0)
+      log_printf("[glbuf] draw with indices in memory after the bound index buffer was deleted "
+                 "(%u so far): vitaGL would have read them through the deleted buffer",
+                 g_glbuf_saved_draws);
+  }
   glDrawElements(mode, count, type, idx);
   return;
 #else
@@ -2142,17 +2153,33 @@ static void glGenBuffers_e(GLsizei n, GLuint *b) { GLLOG("glGenBuffers(%d)", (in
 static void glBindBuffer_e(GLenum tg, GLuint b) {
   GLLOG("glBindBuffer(0x%x,%u)", (unsigned)tg, (unsigned)b);
   if (tg == GL_ARRAY_BUFFER) g_cur_arraybuf = b;
-  else if (tg == GL_ELEMENT_ARRAY_BUFFER) g_cur_elementbuf = b;
+  else if (tg == GL_ELEMENT_ARRAY_BUFFER) { g_cur_elementbuf = b; if (b) g_elem_deleted_bound = 0; }
   glBindBuffer(tg, b);
 }
+// Issue #4, a crash on Telos when the area after the Batu Rem fight loads. GL
+// resets a binding to 0 when the bound buffer is deleted. vitaGL 38d2f97 frees
+// the buffer and keeps the binding (vertex_array_unit, cur_vao->index_array_unit),
+// so its glDrawElements then reads indices at freed->ptr + the game's pointer to
+// indices in memory: a wrapped, invalid address (DATA_ABORT in
+// _glDrawElements_CustomShadersIMPL, custom_shaders.c:1318). The GL worker's
+// shadow follows GL, so it also dropped the game's own later bind of 0 as
+// redundant. Unbind first, as GL would, and vitaGL never keeps a freed buffer.
 static void glDeleteBuffers_e(GLsizei n, const GLuint *buffers) {
   if (buffers) {
+    int unbind_array = 0, unbind_elem = 0;
     for (GLsizei i = 0; i < n; i++) {
-      if (g_cur_arraybuf == buffers[i]) g_cur_arraybuf = 0;
-      if (g_cur_elementbuf == buffers[i]) g_cur_elementbuf = 0;
+      if (!buffers[i]) continue;
+      if (g_cur_arraybuf == buffers[i]) unbind_array = 1;
+      if (g_cur_elementbuf == buffers[i]) unbind_elem = 1;
       for (unsigned a = 0; a < GL_ATTRIB_TRACK_MAX; a++)
         if (g_attrib_state[a].buffer == buffers[i]) g_attrib_state[a].buffer = 0;
     }
+    if (unbind_array) glBindBuffer_e(GL_ARRAY_BUFFER, 0);
+    if (unbind_elem) { glBindBuffer_e(GL_ELEMENT_ARRAY_BUFFER, 0); g_elem_deleted_bound = 1; }
+    if ((unbind_array || unbind_elem) && (++g_glbuf_unbinds <= 4 || g_glbuf_unbinds % 256 == 0))
+      log_printf("[glbuf] buffer deleted while bound (%s%s): unbound first (%u so far)",
+                 unbind_array ? "vertex" : "", unbind_array && unbind_elem ? ", index" : unbind_elem ? "index" : "",
+                 g_glbuf_unbinds);
   }
   glDeleteBuffers(n, buffers);
 }
