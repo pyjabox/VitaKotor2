@@ -2,7 +2,7 @@
  *
  * The Android game asks Java for the device language
  * (ASPYR.getCurrentLanguage, answered by jni_patch.c) and runs in what it is
- * told: 0 English, 1 French, 2 German, 3 Italian, 4 Spanish. The patch OBB has
+ * told: 0 English, 1 French, 2 Italian, 3 German, 4 Spanish. The patch OBB has
  * all five talk tables but only English voices, lip sync and voiced movies;
  * the engine looks each of those up under localized/<language>/ before
  * localized/english/, file by file, so a voice pack copied to
@@ -39,8 +39,8 @@
 static const struct { const char *tag, *label; } kObb[INI_LANG_COUNT] = {
   [INI_LANG_EN] = { "english", "ENGLISH" },
   [INI_LANG_FR] = { "french", "FRAN\xC3\x87" "AIS" },
-  [INI_LANG_DE] = { "german", "DEUTSCH" },
   [INI_LANG_IT] = { "italian", "ITALIANO" },
+  [INI_LANG_DE] = { "german", "DEUTSCH" },
   [INI_LANG_ES] = { "spanish", "ESPA\xC3\x91" "OL" },
 };
 

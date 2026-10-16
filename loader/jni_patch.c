@@ -168,7 +168,7 @@ static int CallStaticIntMethodV(void *env, void *cls, void *mid, va_list a) {
   if (!strcmp(n, "GetScreenWidthPixel"))       r = 960;
   else if (!strcmp(n, "GetScreenHeightPixel")) r = 544;
   // The device language on Android; here the one chosen in the boot menu
-  // (lang.c). 0 English, 1 French, 2 German, 3 Italian, 4 Spanish.
+  // (lang.c). 0 English, 1 French, 2 Italian, 3 German, 4 Spanish.
   else if (!strcmp(n, "getCurrentLanguage"))   r = lang_engine_id();
   LOG_JNI("CallStaticIntMethod(id=%s) -> %d", n, r);
   return r;

@@ -211,8 +211,8 @@ done:
 
 /* One table for both directions, so a code and its id can never drift apart. */
 static const struct { const char *code; int id; } kCodes[] = {
-  { "en", INI_LANG_EN }, { "fr", INI_LANG_FR }, { "de", INI_LANG_DE },
-  { "it", INI_LANG_IT }, { "es", INI_LANG_ES },
+  { "en", INI_LANG_EN }, { "fr", INI_LANG_FR }, { "it", INI_LANG_IT },
+  { "de", INI_LANG_DE }, { "es", INI_LANG_ES },
 };
 
 int ini_language_id(const char *code) {

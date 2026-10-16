@@ -29,13 +29,16 @@ int ini_get(const char *text, const char *section, const char *key,
 size_t ini_set(const char *text, const char *section, const char *key,
                const char *value, char *out, size_t outsz);
 
-/* KOTOR II's language numbers, as ASPYR.getCurrentLanguage() returns them on
- * Android and as the talk tables' headers carry them (localized/<lang>/
- * dialog.tlk in the patch OBB). The engine treats anything else as English. */
+/* The language numbers ASPYR.getCurrentLanguage() returns on Android, the
+ * same as on the KOTOR I port: Italian before German. libkotor2 reads them that
+ * way (2 picks the "it_" subtitles and the Italian folders, 3 the German ones);
+ * anything else is English. The talk tables' headers and the GFF language
+ * substrings number the other way round (German 2, Italian 3): never take
+ * these from a dialog.tlk. */
 #define INI_LANG_EN 0
 #define INI_LANG_FR 1
-#define INI_LANG_DE 2
-#define INI_LANG_IT 3
+#define INI_LANG_IT 2
+#define INI_LANG_DE 3
 #define INI_LANG_ES 4
 #define INI_LANG_COUNT 5
 

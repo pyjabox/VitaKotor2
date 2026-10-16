@@ -130,10 +130,11 @@ static void test_language_ids(void) {
   assert(ini_language_id("es") == INI_LANG_ES);
 }
 
-/* The numbers the engine and the talk tables use: French 1, German 2, Italian 3,
- * Spanish 4 (KOTOR I orders Italian before German). */
-static void test_language_numbers_are_kotor2s(void) {
-  assert(INI_LANG_FR == 1 && INI_LANG_DE == 2 && INI_LANG_IT == 3 && INI_LANG_ES == 4);
+/* The numbers getCurrentLanguage answers with: French 1, Italian 2, German 3,
+ * Spanish 4, as the APK's ASPYR.getCurrentLanguage and libkotor2 have them (not
+ * the talk tables' German 2, Italian 3). */
+static void test_language_numbers_are_getcurrentlanguages(void) {
+  assert(INI_LANG_FR == 1 && INI_LANG_IT == 2 && INI_LANG_DE == 3 && INI_LANG_ES == 4);
 }
 
 static void test_language_ids_case_insensitive(void) {
@@ -335,7 +336,7 @@ int main(void) {
   test_truncates_rather_than_overflows();
   test_zero_sized_buffer();
   test_language_ids();
-  test_language_numbers_are_kotor2s();
+  test_language_numbers_are_getcurrentlanguages();
   test_language_ids_case_insensitive();
   test_unknown_language_is_english();
   test_language_code_round_trips();
