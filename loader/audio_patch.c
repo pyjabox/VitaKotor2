@@ -183,6 +183,7 @@ typedef struct {
    * where the decoding happens: rewinding the decoder from the game thread
    * would be reaching into state the audio thread is using without the lock. */
   int       restart;
+  void     *retire_next; /* the close queue (g_stream_retire): next stream in it */
   /* Still reading its file in (STREAM_FIRST_BYTES): the companion's open file
    * handle, bytes present / expected, and for the [music] line when done. */
   void     *fh;
@@ -455,9 +456,11 @@ static int      g_stream_feed_active = 0;
 /* Streams whose Sound has been released, waiting for the audio thread to close
  * them. Decoding happens OUTSIDE the mixer lock -- see mix_grain -- so the game
  * thread must not free a decoder the audio thread may be inside. It hands the
- * stream over here instead and the audio thread closes it between grains. */
-static Stream  *g_stream_retire[MAX_SOUNDS];
-static int      g_stream_retire_n = 0;
+ * stream over here instead and the audio thread closes it between grains.
+ * A list through Stream.retire_next, so it never fills: a 128-slot array used
+ * to make the game thread close the stream itself when full, possibly while the
+ * audio thread was decoding it. */
+static Stream  *g_stream_retire = NULL;
 /* How long the audio thread spends decoding, and how much of that is inside the
  * lock. Decoding under the lock is what put the game thread to sleep waiting on
  * createSound: measure it rather than trust that moving it out was enough. */
@@ -979,7 +982,7 @@ static void mix_grain(void) {
    * lock of their own. What the lock must still cover is the shared bits: the
    * reader channel's position, the restart flag playSound sets, and the handover
    * of streams whose Sound has been released. Snapshot those, then let go. */
-  struct { Stream *st; uint64_t pos; int havepos; } feed[MAX_SOUNDS];
+  struct { Stream *st; uint64_t pos; int havepos; int restart; } feed[MAX_SOUNDS];
   Stream *doomed[MAX_SOUNDS];
   int nfeed = 0, ndoomed = 0;
   int feed_paused;
@@ -988,7 +991,13 @@ static void mix_grain(void) {
   SceUInt64 ph0 = sceKernelGetProcessTimeWide();
   lock();
   g_mix_active = 1;                     /* defer cache PCM frees until write-back */
-  while (g_stream_retire_n > 0) doomed[ndoomed++] = g_stream_retire[--g_stream_retire_n];
+  while (g_stream_retire && ndoomed < MAX_SOUNDS) {   /* the rest wait for the next grain */
+    doomed[ndoomed++] = g_stream_retire;
+    g_stream_retire = (Stream *)g_stream_retire->retire_next;
+  }
+  /* Read before the snapshot: a restart is taken from the stream only when this
+   * grain will act on it. */
+  feed_paused = g_streaming_paused;
   for (int i = 0; i < MAX_SOUNDS; i++) {
     Snd *s = &g_snd[i];
     if (!s->used || !s->st) continue;
@@ -999,9 +1008,13 @@ static void mix_grain(void) {
     feed[nfeed].st      = s->st;
     feed[nfeed].havepos = (rd && rd->used && rd->playing && rd->snd == s);
     feed[nfeed].pos     = feed[nfeed].havepos ? (uint64_t)rd->pos : 0;
+    /* playSound sets restart under this lock. Taking it here, not in the
+     * unlocked decode below, means a replay that lands while this thread is
+     * decoding is seen next grain instead of being cleared unseen. */
+    feed[nfeed].restart = !feed_paused && s->st->restart;
+    if (feed[nfeed].restart) s->st->restart = 0;
     nfeed++;
   }
-  feed_paused = g_streaming_paused;
   if (!feed_paused && nfeed) g_stream_feed_active = 1;
   /* Listener and per-channel state for the unlocked mix, same lock hold. */
   g_mix_lis.px = g_lis_px; g_mix_lis.py = g_lis_py; g_mix_lis.pz = g_lis_pz;
@@ -1056,10 +1069,9 @@ static void mix_grain(void) {
     SceUInt64 t0 = sceKernelGetProcessTimeWide();
     for (int i = 0; i < nfeed; i++) {
       Stream *st = feed[i].st;
-      if (st->restart) {          /* playSound asked for the track from the top */
+      if (feed[i].restart) {      /* playSound asked for the track from the top */
         audio_mp3_stream_rewind(st->dec);
         audio_ring_reset(&st->ring);
-        st->restart = 0;
       }
       if (feed[i].havepos) audio_ring_retire(&st->ring, feed[i].pos);
       audio_ring_feed(&st->ring, stream_fill_cb, st, FEED_MAX_FRAMES);
@@ -1340,6 +1352,11 @@ static int audio_thread(SceSize args, void *argp) {
   unsigned w_grains = 0, w_gaps = 0;
   uint64_t w_gap_us = 0, w_gap_max = 0, w_gap_off_us = 0, w_mix_us = 0, w_mix_max = 0;
   int high = 0;
+  /* What the port still holds when the next grain is handed over: 0 means it
+   * ran dry and the hardware played silence -- a direct measure, where the
+   * gaps above are inferred from timing. */
+  unsigned w_dry = 0;
+  int w_rest_min = -1;
   log_printf("[snd-gap] output thread: priority %d, cores 0x%x, grain %u us%s",
              sceKernelGetThreadCurrentPriority(), (unsigned)sceKernelGetThreadCpuAffinityMask(0),
              (unsigned)grain_us, AUDIO_PRIO_AB ? "; A/B: priority alternates every 10 s" : "");
@@ -1356,6 +1373,13 @@ static int audio_thread(SceSize args, void *argp) {
       if (s_mix_n >= s_mix_cap) { s_mix_on = 0; s_mix_ready = 1; }
     }
 #endif
+    if (prev_ret) {
+      int rest = sceAudioOutGetRestSample(g_port);
+      if (rest >= 0) {
+        if (rest == 0) w_dry++;
+        if (w_rest_min < 0 || rest < w_rest_min) w_rest_min = rest;
+      }
+    }
     sceAudioOutOutput(g_port, g_out);   /* blocks until the grain is consumed */
     SceUInt64 g2 = sceKernelGetProcessTimeWide();
     /* The port now plays g_out: mix the next grain into the other buffer. */
@@ -1387,14 +1411,16 @@ static int audio_thread(SceSize args, void *argp) {
     prev_ret_c = c2;
 
     if (g2 - w_t0 >= 10000000u) {
-      if (AUDIO_PRIO_AB || AUDIO_VOICE_DIAG || THREAD_PINNING_AB || AUDIO_DOUBLE_BUFFER_AB || w_gaps)
+      if (AUDIO_PRIO_AB || AUDIO_VOICE_DIAG || THREAD_PINNING_AB || AUDIO_DOUBLE_BUFFER_AB || w_gaps || w_dry)
         log_printf("[snd-gap] %s%s%s%u grains: %u gaps, %llu ms in all, worst %llu ms; late time off-core %llu%% | "
+                   "port ran dry %u times, least left %d frames | "
                    "mix avg %llu us, worst %llu us | limiter below unity in %u grains, lowest gain %.3f",
                    AUDIO_PRIO_AB ? (high ? "HIGH " : "DEFAULT ") : "",
                    THREAD_PINNING_AB ? (thread_layout_pinned() ? "PINNED " : "OLD ") : "",
                    AUDIO_DOUBLE_BUFFER_AB ? (g_out_double ? "DOUBLE " : "SINGLE ") : "", w_grains, w_gaps,
                    (unsigned long long)(w_gap_us / 1000u), (unsigned long long)(w_gap_max / 1000u),
                    (unsigned long long)(w_gap_us ? w_gap_off_us * 100u / (w_gap_us + w_gaps * grain_us) : 0),
+                   w_dry, w_rest_min,
                    (unsigned long long)(w_mix_us / w_grains), (unsigned long long)w_mix_max,
                    g_lw_on, (double)g_lw_min);
       g_lw_on = 0;
@@ -1415,6 +1441,8 @@ static int audio_thread(SceSize args, void *argp) {
 #endif
       w_t0 = g2;
       w_grains = w_gaps = 0;
+      w_dry = 0;
+      w_rest_min = -1;
       w_gap_us = w_gap_max = w_gap_off_us = w_mix_us = w_mix_max = 0;
 #if AUDIO_PRIO_AB
       high = !high;
@@ -2320,7 +2348,8 @@ static int Sys_playSound(void *self, void *sound, void *group, int paused, void 
     /* Claim the stream for this channel and start it from the top. pos is 0
      * above, so the window has to be 0 too -- and the decoder has to be rewound
      * with it, or a replayed track would decode from wherever the last one
-     * stopped. Safe here: the feeder runs under this same lock. */
+     * stopped. The audio thread takes the flag under this same lock, in
+     * mix_grain's snapshot, and rewinds in the decode phase that follows. */
     if (s->st) {
       s->st->reader  = c;
       s->st->restart = 1;      /* the audio thread rewinds; see mix_grain */
@@ -2375,8 +2404,9 @@ static int Snd_release(void *self) {
    * freeing it from under itself would be a use-after-free. It closes the
    * stream between grains, where it is certainly not using it. */
   int handed = 0;
-  if (st && g_running && g_stream_retire_n < MAX_SOUNDS) {
-    g_stream_retire[g_stream_retire_n++] = st;
+  if (st && g_running) {
+    st->retire_next = g_stream_retire;
+    g_stream_retire = st;
     handed = 1;
   }
   memset(&s->pcm, 0, sizeof s->pcm);
