@@ -819,8 +819,11 @@ rendering defects.
 | v0.5.4 eboot | `b0b409cecda3f91055e866effc36b4ff2d4ff5bcf552801c0539534c2b7ba3fa` |
 | v0.5.5 eboot | `248252a9c332db4df102d595bc8aa2738125f9bd18966660be772d8b485263bd` |
 | v0.5.6 eboot | `c4351e83529a9ee6c5376c291f6799e047ac3fe0341c7880f8e4c7e6a61e7006` |
+| v0.5.7 eboot | `0f9337385a3bff9d14b4b6ec50c63f7a0c44b3584ce875b229f2a7902cb6f770` |
 
 ## 15. Current decision
+
+v0.5.7 is v0.5.6 with German and Italian in the order libkotor2 expects (issue #1: German 3, Italian 2, as the APK's `getCurrentLanguage`), and two races in the mixer closed (loader/audio_patch.c): the audio thread now takes a stream's restart flag in its locked snapshot, and the queue of released streams is a list that never fills. `[snd-gap]` also reports what the audio port held before each grain (`sceAudioOutGetRestSample`; issue #5). Frame rate was not measured again.
 
 v0.5.6 is v0.5.5 with loose voice lines read into RAM at open (loader/ramfile.c), so the game can no longer hold all 64 of a process's files: in Telos's apartments, with a voice pack, every open failed from 64 held files (58 voice lines). The log keeps its file open, open files are counted (`[fd]`), threads are listed with their core and load (`[cpu]`), and the mixer alternates two output buffers. Core pinning (`THREAD_PINNING`) is off. Frame rate was not measured again.
 

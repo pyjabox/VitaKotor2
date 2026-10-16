@@ -14,7 +14,7 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.5.6). Core gameplay and the major
+**Playable work in progress (v0.5.7). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
@@ -33,6 +33,7 @@ v0.5.4 makes scripted doors and objects work again in busy areas, such as the
 airlock in Peragus's dormitories. v0.5.5 fixes the black screen on Telos when
 the apartments load after the fight with Batu Rem. v0.5.6 fixes rooms that stop
 responding, and saves that come out empty, when a voice pack is installed.
+v0.5.7 fixes German and Italian, which were swapped.
 Performance tuning and broad playthrough validation remain active.**
 
 ### Working and validated
@@ -230,6 +231,19 @@ What is enabled by default:
     65 held lines in that scene). Voices from the game's archive (English)
     were never affected.
 
+- **New in v0.5.7:**
+  - **German and Italian were swapped** ([issue #1](https://github.com/pyjabox/VitaKotor2/issues/1)):
+    since v0.5.2, choosing DEUTSCH ran the game in Italian and ITALIANO in
+    German, after a first loading screen in the right language, and a German
+    patch in `dlc/` was never read. The loader gave the game the numbering of
+    the talk tables' headers instead of the Android app's. A language already
+    chosen needs no change. The boot menu now lists ITALIANO before DEUTSCH.
+  - **Sound:** two rare races between the game and the mixer are closed. A
+    track replayed while the mixer was decoding could carry on from where it
+    stopped instead of starting over, and a stream released while 128 others
+    waited to be closed was closed while it could still be decoding. The log
+    now also says when the audio port ran dry (issue #5).
+
 ### Remaining limitations
 
 | Area | Current behavior |
@@ -239,7 +253,7 @@ What is enabled by default:
 | Visual changes | There are no dynamic shadows: the loader sets the game's own `Shadows=0` (and `Soft Shadows=0`) in `swkotor2.ini` at every launch. The in-game option still works until the next launch. The mobile bloom passes are skipped (no game option controls them). Rooms keep their baked lighting. |
 | Languages | The menu before the game is in English. In a language other than English, mods' additions can be English: see [Mods and languages](#mods-and-languages). |
 | AI updates | Creatures in combat, acting or walking, and objects with a scripted order waiting get their AI update every frame. Idle creatures, placeables, doors and items are updated every third frame. Nothing was noticed in testing, but idle characters may react up to two frames later. |
-| Audio | Known issue: in busy scenes, such as Telos, a noise can be heard behind the sound. Sound reaches the hardware late while streams are being decoded ([issue #5](https://github.com/pyjabox/VitaKotor2/issues/5)). |
+| Audio | Known issue: in busy scenes, such as Telos, a noise can be heard behind the sound. The decoders and the mix were checked and are clean; the cause is not known yet ([issue #5](https://github.com/pyjabox/VitaKotor2/issues/5)). |
 | Latency | The GL worker lets the game run up to one frame ahead of the display. An object stepping out from cover can appear up to three frames late (occlusion culling). |
 | Hitches | Occasional single frames of about 0.12–0.23 s remain when new content is first read from the memory card (about 10 MB/s): the minimap's first draw, dialog entries and their voices, creatures spawned by scripts. Loading-screen images still take about 0.1–0.35 s each. |
 | Shader cache | Releases use the validated cache-enabled/no-`LOG_ERRORS` vitaGL recipe, which removes major first-use shader stalls and includes a uniform-overflow clamp. An older cache experiment faulted on a warm launch, so cache recovery remains documented and broader validation is ongoing. |
