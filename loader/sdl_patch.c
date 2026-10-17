@@ -38,6 +38,7 @@
 #include "asl_worker.h"
 #include "cpu_offload.h"
 #include "scene_cpu.h"
+#include "path_cache.h"
 #include "cansee_cache.h"
 #include "gl_state_filter.h"
 #include "so_util.h"
@@ -96,6 +97,7 @@ static void SDL_GL_SwapWindow_hook(SDL_Window *w) {
   aslw_on_swap();
   cpu_offload_on_swap();
   scene_cpu_on_swap();
+  path_cache_on_swap();
   cansee_cache_on_swap();
   {
     static uint64_t prev_swap;

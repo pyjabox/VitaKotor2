@@ -116,3 +116,49 @@ visibility), 2026-10-17.
   long server-AI passes; the same frames appear with the AI in the server
   loop. Being investigated (`AI_THREAD_DIAG` long-pass log,
   `PC_PROF_TARGET_AI`).
+
+## The periodic AI hitch: path-point searches that fail (`loader/path_cache.c`)
+
+### The symptom
+- A ~150 ms frame every 3.5–5 s in one Telos area, with the AI thread on or
+  off.
+- With the AI thread, it showed as the game thread waiting 110–145 ms for the
+  AI worker.
+
+### Diagnosis
+- **Long-pass log** (`AI_THREAD_DIAG`): 27 AI passes used 130–140 ms of CPU
+  each, almost all in one creature's AIUpdate.
+- **PC profile of the AI worker inside those passes** (`PC_PROF_TARGET_AI`):
+  - `AIActionMoveToPoint` → `CSWSModule::PlotPath` → `PlotPathPointPath`
+    (95%);
+  - → `CSWSArea::ClosestPathPoint` (85%);
+  - → `TestDirectLine` → `NoNonWalkPolysOnRoom` / `NoNonWalkPolys` (71%),
+    line tests against the room walkmeshes.
+
+### How ClosestPathPoint searches
+- **The search:** it walks the area's path points (sorted by x at `+0x260`,
+  count `+0x25c`) in square rings 10 units wider each time, up to 50. It
+  tests a clear line to each candidate closer than the best so far, and ends
+  after the first ring with a hit. A position with no reachable point runs
+  all 50 rings.
+- **Static checks:** `TestDirectLine` checks the static walkmesh first.
+- **Objects:** then `NoNonWalkPolysDetailed` (doors and placeables).
+- **Creatures:** then `NoCreaturesOnLine`. But ClosestPathPoint accepts a
+  creature-blocked line (−3) as a hit, so creatures never change its answer.
+
+### The fix
+- **Kept:** a search that finds nothing, with no candidate turned down by the
+  object check, is fixed by the area's static data. It is kept per area,
+  position, and path-point array, and forgotten after a load.
+- **Never kept:** successes, since a door may close.
+- **Switch:** `path_mode.txt`.
+
+### Hardware, Telos, 2026-10-17 (A/B every 10 s)
+- **The stuck creature:** it sits at (25.53, −10.56) and fails its search every
+  3–5 s. Each failure costs 105–118 ms with the cache off, and is answered
+  from memory with it on.
+
+| 10 s window | Worst frame | Worst AI wait |
+|---|---:|---:|
+| Cache on | 60–92 ms | 7–40 ms |
+| Cache off | 165–194 ms | 118–144 ms |

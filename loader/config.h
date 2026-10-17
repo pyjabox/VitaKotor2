@@ -764,6 +764,16 @@
 #ifndef ANIM_LOD_N
 #define ANIM_LOD_N                3
 #endif
+// Path-point searches that found nothing for reasons of the walkmesh alone are
+// remembered per area and position (path_cache.c): a creature stuck off the
+// path network retries every few seconds, ~140 ms each on Telos.
+// ux0:data/kotor2/path_mode.txt: 0 off, 1 on, a on and off every 10 s.
+#ifndef PATH_CACHE
+#define PATH_CACHE                1
+#endif
+#ifndef PATH_CACHE_DEFAULT
+#define PATH_CACHE_DEFAULT        '1'
+#endif
 // Test builds: count the engine's calls into ASLgl, its queries, client-memory
 // draws, draw and shader-setup times, and a recorder micro-benchmark, per 10 s
 // window ([aslprobe] lines; loader/asl_probe.c).

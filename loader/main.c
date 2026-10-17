@@ -39,6 +39,7 @@
 #include "asl_worker.h"
 #include "cpu_offload.h"
 #include "scene_cpu.h"
+#include "path_cache.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -4910,6 +4911,7 @@ int main(int argc, char *argv[]) {
   ai_thread_install();
   cpu_offload_install();
   scene_cpu_install();
+  path_cache_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
 #else
