@@ -23,6 +23,7 @@
 #include "gl_patch.h"
 #include "asl_worker.h"
 #include "cpu_offload.h"
+#include "scene_cpu.h"
 #include "log.h"
 
 #if AUTOTEST_ENABLE
@@ -201,10 +202,10 @@ static void tick(uint64_t now) {
 static unsigned s_shots;
 static void shot(const char *what) {
   static const char *const k_phase[] = {"na", "off", "on"};
-  int ph = aslw_phase() + 1, po = cpu_offload_phase() + 1;
-  char phase[32];
-  snprintf(phase, sizeof phase, "aslw-%s.offload-%s", k_phase[ph >= 0 && ph < 3 ? ph : 0],
-           k_phase[po >= 0 && po < 3 ? po : 0]);
+  int ph = aslw_phase() + 1, po = cpu_offload_phase() + 1, ps = scene_cpu_phase() + 1;
+  char phase[48];
+  snprintf(phase, sizeof phase, "aslw-%s.offload-%s.scene-%s", k_phase[ph >= 0 && ph < 3 ? ph : 0],
+           k_phase[po >= 0 && po < 3 ? po : 0], k_phase[ps >= 0 && ps < 3 ? ps : 0]);
   char line[80];
   int n = snprintf(line, sizeof line, "%03u %s %s\n", s_shots, what, phase);
   sceIoRemove("ux0:data/kotor2/shot.txt");

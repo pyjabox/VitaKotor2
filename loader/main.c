@@ -38,6 +38,7 @@
 #include "asl_probe.h"
 #include "asl_worker.h"
 #include "cpu_offload.h"
+#include "scene_cpu.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -4908,6 +4909,7 @@ int main(int argc, char *argv[]) {
   // Last: it takes over slots whatever the installers above left in them.
   ai_thread_install();
   cpu_offload_install();
+  scene_cpu_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
 #else

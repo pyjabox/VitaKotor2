@@ -6,4 +6,8 @@
 /* The game thread, at its start (after crash_init): self-test, then sample. */
 void pc_prof_start(void);
 
+/* Sample this thread (and walk its stack) instead of the game thread. */
+#include <stdint.h>
+void pc_prof_retarget(int thid, uintptr_t stk_lo, uintptr_t stk_hi);
+
 #endif

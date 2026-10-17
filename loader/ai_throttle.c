@@ -169,6 +169,9 @@ static void trace_note(void *obj, int updated, int top) {
 }
 #endif
 
+/* The object UpdateState is about to AIUpdate (ai_thread.c's long-pass log). */
+void *volatile ai_throttle_cur_obj;
+
 static void *gno_hook(void *list) {
   uintptr_t ra = (uintptr_t)__builtin_return_address(0) & ~(uintptr_t)1;
   if (ra != s_ret) return s_orig(list);
@@ -213,6 +216,7 @@ static void *gno_hook(void *list) {
   e->frame = s_frame;
   w_updates++;
   if (top) w_top++;
+  ai_throttle_cur_obj = obj;
   return obj;
 }
 

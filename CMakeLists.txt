@@ -66,6 +66,7 @@ add_executable(KOTOR2
   loader/ai_throttle.c
   loader/ai_thread.c
   loader/cpu_offload.c
+  loader/scene_cpu.c
   loader/asl_probe.c
   loader/asl_worker.c
   loader/aslw_gen.c

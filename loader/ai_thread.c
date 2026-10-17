@@ -62,6 +62,8 @@
 #include "threads.h"
 #include "ai_thread.h"
 #include "gl_worker.h"
+#include "ai_throttle.h"
+#include "pc_prof.h"
 
 #if AI_THREAD
 
@@ -349,6 +351,37 @@ static int (*s_evp)(void *master, uint32_t day, uint32_t time);
 static int (*s_gpe)(void *master, uint32_t *day, uint32_t *time, uint32_t *caller, uint32_t *target,
                     uint32_t *type, void **data);
 
+/* Long passes (AI_LONG_PASS_US and over): the slowest AIUpdate and the slowest
+ * event of the pass, logged with the pass's time span (the log's clock), so a
+ * PC profile of the worker (PC_PROF_TARGET_AI) can be read for just those. */
+#ifndef AI_LONG_PASS_US
+#define AI_LONG_PASS_US 60000u
+#endif
+static uint64_t d_pass_t0, d_pass_cpu0, d_upd_t0, d_upd_max, d_ev_t0, d_ev_max;
+static void *d_upd_obj, *d_upd_max_obj;
+static uint32_t d_upd_n, d_ev_type, d_ev_max_type, d_ev_n, d_long_logged;
+
+/* The class of an engine object, from its vtable's symbol. */
+static const char *vt_name(void *obj) {
+  if (!obj) return "-";
+  uintptr_t vt = *(uintptr_t *)obj;
+  if (vt < kotor_mod.text_base) return "?";
+  uint32_t off = (uint32_t)(vt - kotor_mod.text_base);
+  for (int i = 0; i < kotor_mod.num_dynsym; i++) {
+    const Elf32_Sym *s = &kotor_mod.dynsym[i];
+    if (ELF32_ST_TYPE(s->st_info) != STT_OBJECT || off < s->st_value || off >= s->st_value + s->st_size) continue;
+    const char *n = kotor_mod.dynstr + s->st_name;
+    if (!strncmp(n, "_ZTV", 4)) return n + 4;
+  }
+  return "?";
+}
+static void diag_event_close(void) {
+  if (!d_ev_t0) return;
+  uint64_t d = now_us() - d_ev_t0;
+  if (d > d_ev_max) { d_ev_max = d; d_ev_max_type = d_ev_type; }
+  d_ev_t0 = 0;
+}
+
 static uint64_t thread_cpu_us(void) {
   SceKernelThreadInfo ti;
   memset(&ti, 0, sizeof ti);
@@ -375,14 +408,40 @@ static void diag_pass_start(int arm) {
   d_level = -1;
   d_remaining = 10000;
   d_passes[arm]++;
+  d_pass_t0 = now_us();
+  d_pass_cpu0 = thread_cpu_us();
+  d_upd_t0 = d_upd_max = d_ev_t0 = d_ev_max = 0;
+  d_upd_max_obj = NULL;
+  d_upd_n = d_ev_n = 0;
 }
 
 static void diag_pass_end(void) {
   diag_end_level();
+  diag_event_close();
   d_level = -1;
+  uint64_t t1 = now_us(), wall = t1 - d_pass_t0;
+  if (wall >= AI_LONG_PASS_US && d_long_logged < 400) {
+    d_long_logged++;
+    void *o = d_upd_max_obj;
+    log_printf("[aithread] long pass %s: %.3f-%.3f s, %.1f ms wall, %.1f ms CPU; %u updates, slowest %.1f ms (%.40s "
+               "id %08x); %u events, slowest %.1f ms (type %u)",
+               d_arm ? "beside the drawing" : "in the server loop", d_pass_t0 / 1e6, t1 / 1e6, wall / 1000.0,
+               (thread_cpu_us() - d_pass_cpu0) / 1000.0, (unsigned)d_upd_n, d_upd_max / 1000.0, vt_name(o),
+               o ? (unsigned)((uint32_t *)o)[1] : 0u, (unsigned)d_ev_n, d_ev_max / 1000.0, (unsigned)d_ev_max_type);
+  }
 }
 
 static void diag_clock(uint32_t off, uint64_t clock) {
+  if (off == US_T_START || off == US_T0) diag_event_close();
+  if (off == US_T0) {                     /* AIUpdate is next */
+    d_upd_t0 = now_us();
+    d_upd_obj = ai_throttle_cur_obj;
+    d_upd_n++;
+  } else if (off == US_T_LAST && d_upd_t0) {
+    uint64_t d = now_us() - d_upd_t0;
+    if (d > d_upd_max) { d_upd_max = d; d_upd_max_obj = d_upd_obj; }
+    d_upd_t0 = 0;
+  }
   if (off == US_T_START) {
     diag_end_level();
     d_level++;
@@ -411,11 +470,16 @@ static int evp_hook(void *master, uint32_t day, uint32_t time) {
 
 static int gpe_hook(void *master, uint32_t *day, uint32_t *time, uint32_t *caller, uint32_t *target,
                     uint32_t *type, void **data) {
-  int r = s_gpe(master, day, time, caller, target, type, data);
   uintptr_t ret = (uintptr_t)__builtin_return_address(0);
-  if (r == 1 && ret >= s_upd_lo && ret < s_upd_hi) {
+  int ours = ret >= s_upd_lo && ret < s_upd_hi;
+  if (ours) diag_event_close();            /* the event before this one is done */
+  int r = s_gpe(master, day, time, caller, target, type, data);
+  if (r == 1 && ours) {
     d_events[d_arm]++;
     d_types[d_arm][type && *type < NTYPES ? *type : 0]++;
+    d_ev_t0 = now_us();
+    d_ev_type = type ? *type : 0;
+    d_ev_n++;
   }
   return r;
 }
@@ -520,6 +584,9 @@ static void *worker_main(void *arg) {
   sceKernelChangeThreadCpuAffinityMask(0, CPU_AUX_A);
   sceKernelChangeThreadPriority(0, AI_THREAD_PRIORITY);
   thread_census_add(sceKernelGetThreadId(), "ai-worker");
+#if PC_PROF && PC_PROF_TARGET_AI
+  pc_prof_retarget(sceKernelGetThreadId(), lo, hi);
+#endif
   s_worker_glkey = gl_worker_tls_key();
   s_wstack_lo = lo;
   __sync_synchronize();

@@ -401,14 +401,26 @@ static int sampler(SceSize args, void *argp) {
   return 0;
 }
 
+/* Sample another thread instead of the game thread (PC_PROF_TARGET_AI: the
+ * AI worker, from its start), with its stack for the frame chain. */
+void pc_prof_retarget(int thid, uintptr_t stk_lo, uintptr_t stk_hi) {
+  s_stk_lo = stk_lo;
+  s_stk_hi = stk_hi;
+  __sync_synchronize();
+  s_game = thid;
+  log_printf("[pcprof] sampling thread 0x%x now (stack %08x-%08x)", (unsigned)thid, (unsigned)stk_lo, (unsigned)stk_hi);
+}
+
 void pc_prof_start(void) {
-  s_game = sceKernelGetThreadId();
-  SceKernelThreadInfo ti;
-  memset(&ti, 0, sizeof ti);
-  ti.size = sizeof ti;
-  if (sceKernelGetThreadInfo(s_game, &ti) >= 0) {
-    s_stk_lo = (uintptr_t)ti.stack;
-    s_stk_hi = s_stk_lo + (uintptr_t)ti.stackSize;
+  if (s_game < 0) {                            /* not retargeted already (the AI worker starts first) */
+    s_game = sceKernelGetThreadId();
+    SceKernelThreadInfo ti;
+    memset(&ti, 0, sizeof ti);
+    ti.size = sizeof ti;
+    if (sceKernelGetThreadInfo(s_game, &ti) >= 0) {
+      s_stk_lo = (uintptr_t)ti.stack;
+      s_stk_hi = s_stk_lo + (uintptr_t)ti.stackSize;
+    }
   }
   KuKernelExceptionHandlerOpt opt;
   opt.size = sizeof opt;

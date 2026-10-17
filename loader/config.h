@@ -743,6 +743,27 @@
 #ifndef CPU_OFFLOAD_PRIORITY
 #define CPU_OFFLOAD_PRIORITY      0x10000104      /* below the AI worker */
 #endif
+// Light lists without the scans, and the gobs not drawn this frame animated
+// one frame in ANIM_LOD_N (scene_cpu.c). ux0:data/kotor2/scene_mode.txt: 0 off,
+// 1 on, a on and off alternately every 10 s; SCENE_CPU_DEFAULT without the
+// file. SCENE_CPU_STATS (test builds): timing of the scene passes and of
+// Gob::Animate per call site; SCENE_CPU_VERIFY: the light lists checked
+// against the engine's.
+#ifndef SCENE_CPU
+#define SCENE_CPU                 1
+#endif
+#ifndef SCENE_CPU_DEFAULT
+#define SCENE_CPU_DEFAULT         '1'
+#endif
+#ifndef SCENE_CPU_STATS
+#define SCENE_CPU_STATS           0
+#endif
+#ifndef SCENE_CPU_VERIFY
+#define SCENE_CPU_VERIFY          0
+#endif
+#ifndef ANIM_LOD_N
+#define ANIM_LOD_N                3
+#endif
 // Test builds: count the engine's calls into ASLgl, its queries, client-memory
 // draws, draw and shader-setup times, and a recorder micro-benchmark, per 10 s
 // window ([aslprobe] lines; loader/asl_probe.c).
@@ -774,6 +795,9 @@
 #define PC_PROF                   0
 #endif
 #define PC_PROF_PERIOD_US         3000
+#ifndef PC_PROF_TARGET_AI
+#define PC_PROF_TARGET_AI         0               /* sample the AI worker instead of the game thread */
+#endif
 // Rooms beyond the distance in ux0:data/kotor2/room_distance.txt are not drawn
 // (loader/room_dist.c, opt-in). Test builds (ROOM_AB): beyond ROOM_AB_RADIUS_M
 // in alternate windows, with a [roomab] line per window.

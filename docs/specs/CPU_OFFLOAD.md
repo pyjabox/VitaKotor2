@@ -68,3 +68,51 @@ switching on and off every 10 s. Log:
   is 1.22.
 - In the heaviest water windows the worker missed up to 2.4 updates a frame;
   in steady play it missed none.
+
+## Scene work: light lists and the animation of gobs not drawn (`loader/scene_cpu.c`)
+
+These come from studying `Scene::Render` (animation, scene buckets and
+visibility), 2026-10-17.
+
+### What the engine does
+- **Animation:** it animates every gob once a frame. `Gob::Animate` stamps
+  gob `+0x1b8` with the scene's frame at `+0x50`.
+  - `Scene::DoGobBuckets` animates the gobs it is about to draw (return
+    address `+0x537d25`), draws them, then animates all the others
+    (`+0x537f51`).
+  - Animation is not reentrant: it writes globals and fires 35 kinds of event
+    callbacks through `DoEvent`. So it stays on the game thread.
+- **Light lists:** `LightManager::SetupLightsForThisPositionAndRadius` runs once
+  per drawn gob, and from ManageSceneBSP. It de-duplicates with
+  `List::Contains`, a linear scan per candidate light.
+- **Visibility:** in room scenes every room is a BSP leaf, so `ManageSceneBSP`
+  costs flat per-room loops, not a tree walk.
+
+### What changed
+- **Light lists:** the same tests, in the same order, de-duplicated with a hash
+  set. The lists are identical; `SCENE_CPU_VERIFY` checked them against the
+  engine's.
+- **Gobs not drawn this frame:** animated one frame in `ANIM_LOD_N` (3), and
+  the time skipped is added to the next step.
+  - In a skipped frame the gob is processed (`Gob::ProcessGob`) and stamped.
+  - A gob animated from elsewhere gets the time it is owed.
+  - Excluded: gobs drawn later in the frame (the hologram, force-push and
+    lightsaber buckets), forced, always-rendered, cutscene, and procedural
+    gobs (byte `+0x1b0`).
+
+### Hardware, Telos (free roam, 2026-10-17)
+
+| | On | Off |
+|---|---:|---:|
+| Light setup, a frame | 1.5–3.0 ms | 3.2–4.6 ms |
+| After-draw animation, a frame | 0.73–0.85 ms | 1.47–1.49 ms |
+
+- Light lists: 260–280 lights in the visible rooms, 30 lights out, and 390–840
+  duplicates dropped a frame.
+- Animation: 32–47 gobs skipped a frame. No jerky NPCs were seen.
+- The animation of the gobs drawn (before-draw) is 2.0–2.7 ms a frame. A pose
+  worker on core 1 would gain at most about 2 ms of that, so it is not built.
+- **Periodic hitches seen in that area:** about 150 ms every 3–5 s. They are
+  long server-AI passes; the same frames appear with the AI in the server
+  loop. Being investigated (`AI_THREAD_DIAG` long-pass log,
+  `PC_PROF_TARGET_AI`).

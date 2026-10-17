@@ -11,4 +11,7 @@ void ai_throttle_install(unsigned period, int ab);
 /* Once per frame, game thread. Also writes the [aithrottle] line every 10 s. */
 void ai_throttle_on_swap(void);
 
+/* The object UpdateState last got from GetNextObject (diagnostics). */
+extern void *volatile ai_throttle_cur_obj;
+
 #endif
