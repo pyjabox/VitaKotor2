@@ -700,6 +700,61 @@
 #ifndef AI_THROTTLE_PERIOD
 #define AI_THROTTLE_PERIOD        3
 #endif
+// Server AI on core 1 while the game thread draws the scene (loader/ai_thread.c).
+// ux0:data/kotor2/ai_thread.txt: 0 off, 1 on, i moved into the drawing but on
+// the game thread, a on and off alternately every 10 s; AI_THREAD_DEFAULT
+// without the file. The worker sits below the audio mixer (default priority).
+#ifndef AI_THREAD
+#define AI_THREAD                 1
+#endif
+#ifndef AI_THREAD_DEFAULT
+#define AI_THREAD_DEFAULT         '1'
+#endif
+#ifndef AI_THREAD_PRIORITY
+#define AI_THREAD_PRIORITY        0x10000102
+#endif
+// ASLgl, gles2-bc and vitaGL on the GL worker (loader/asl_worker.c): the game
+// thread records the engine's calls into ASLgl. ux0:data/kotor2/aslw_mode.txt:
+// 0 off, 1 on, a on and off alternately every 10 s; ASLW_DEFAULT without the
+// file. ASLW_VERIFY (test builds): every query answered from a state copy is
+// also asked of the worker, and disagreements are counted ([aslw] lines).
+#ifndef ASLW
+#define ASLW                      1
+#endif
+#ifndef ASLW_DEFAULT
+#define ASLW_DEFAULT              '1'
+#endif
+#ifndef ASLW_VERIFY
+#define ASLW_VERIFY               0
+#endif
+// Text widths cached and animated textures rebuilt on core 1 (cpu_offload.c).
+// ux0:data/kotor2/offload_mode.txt: 0 off, 1 on, a on and off alternately
+// every 10 s; CPU_OFFLOAD_DEFAULT without the file. CPU_OFFLOAD_VERIFY checks
+// every cached width against FTGL.
+#ifndef CPU_OFFLOAD
+#define CPU_OFFLOAD               1
+#endif
+#ifndef CPU_OFFLOAD_DEFAULT
+#define CPU_OFFLOAD_DEFAULT       '1'
+#endif
+#ifndef CPU_OFFLOAD_VERIFY
+#define CPU_OFFLOAD_VERIFY        0
+#endif
+#ifndef CPU_OFFLOAD_PRIORITY
+#define CPU_OFFLOAD_PRIORITY      0x10000104      /* below the AI worker */
+#endif
+// Test builds: count the engine's calls into ASLgl, its queries, client-memory
+// draws, draw and shader-setup times, and a recorder micro-benchmark, per 10 s
+// window ([aslprobe] lines; loader/asl_probe.c).
+#ifndef ASL_PROBE
+#define ASL_PROBE                 0
+#endif
+// Test builds: why each AI level ends (budget, due event, list wrapped), its
+// clock, CPU and wall time, and the events dispatched, per 10 s window, for the
+// AI in the server loop and beside the drawing ([aithread] diag lines).
+#ifndef AI_THREAD_DIAG
+#define AI_THREAD_DIAG            0
+#endif
 // The game's DXT textures are uploaded compressed instead of decoded to RGBA on
 // the CPU by ASLgl (loader/dxt_native.c).
 #ifndef DXT_NATIVE

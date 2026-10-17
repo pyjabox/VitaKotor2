@@ -34,6 +34,10 @@
 #include "gl_state_filter.h"
 #include "ai_budget.h"
 #include "ai_throttle.h"
+#include "ai_thread.h"
+#include "asl_probe.h"
+#include "asl_worker.h"
+#include "cpu_offload.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -1165,6 +1169,21 @@ static void gui_scissor_restore(const GuiScissorState *state) {
   else                glDisable(GL_SCISSOR_TEST);
 }
 
+/* The scissor saved, the scope opened, and the reverse: where ASLgl runs
+ * (aslw_run). gles2-bc's glViewport reaches glViewport_t (gl_patch.c), which
+ * reads the scope; with ASLgl on the GL worker both must follow the engine's
+ * calls in the stream, not the game thread. The stack depth stays here. */
+static void gui_scope_open(uint32_t i) {
+  GuiScissorState *state = &g_gui_scissor_stack[i];
+  state->enabled = glIsEnabled(GL_SCISSOR_TEST);
+  glGetIntegerv(GL_SCISSOR_BOX, state->box);
+  g_gl_gui_viewport_scope++;
+}
+static void gui_scope_close(uint32_t i) {
+  g_gl_gui_viewport_scope--;
+  gui_scissor_restore(&g_gui_scissor_stack[i]);
+}
+
 static int AurGUISetupViewport_scissor(int x, int y, int w, int h,
                                        const void *color, uint32_t clear,
                                        uint32_t alpha) {
@@ -1175,15 +1194,12 @@ static int AurGUISetupViewport_scissor(int x, int y, int w, int h,
     return rc;
   }
 
-  GuiScissorState *state = &g_gui_scissor_stack[g_gui_scissor_depth++];
-  state->enabled = glIsEnabled(GL_SCISSOR_TEST);
-  glGetIntegerv(GL_SCISSOR_BOX, state->box);
-  g_gl_gui_viewport_scope++;
+  uint32_t i = g_gui_scissor_depth++;
+  aslw_run(gui_scope_open, i);
   int rc = AurGUISetupViewport_orig(x, y, w, h, color, clear, alpha);
   if (!rc) {
-    g_gl_gui_viewport_scope--;
     g_gui_scissor_depth--;
-    gui_scissor_restore(state);
+    aslw_run(gui_scope_close, i);
   }
   return rc;
 }
@@ -1203,11 +1219,10 @@ static void AurGUICloseViewport_scissor(void) {
     return;
   }
 
-  GuiScissorState state = g_gui_scissor_stack[g_gui_scissor_depth - 1];
+  uint32_t i = g_gui_scissor_depth - 1;
   AurGUICloseViewport_orig();
-  g_gl_gui_viewport_scope--;
   g_gui_scissor_depth--;
-  gui_scissor_restore(&state);
+  aslw_run(gui_scope_close, i);
 }
 
 static void install_gui_viewport_fix(void) {
@@ -4890,6 +4905,14 @@ int main(int argc, char *argv[]) {
   install_options_resource_directory_fix();
 #endif
   install_gui_viewport_fix();
+  // Last: it takes over slots whatever the installers above left in them.
+  ai_thread_install();
+  cpu_offload_install();
+#if ASLW
+  aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
+#else
+  asl_probe_install();
+#endif
   // KOTOR 1 probes contain binary-specific offsets and are intentionally off
   // until equivalent KOTOR II symbols have been validated.
 

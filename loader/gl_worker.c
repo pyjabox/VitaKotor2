@@ -41,6 +41,7 @@ static struct {
   uint32_t *ring;
   SceUID work_sema, sync_sema;
   volatile uint32_t producer_key;
+  volatile uint32_t guest_key;
 } GLW_LINE R = {NULL, -1, -1, 0};
 
 /* Custom ops (hand-written wrappers below). */
@@ -71,6 +72,8 @@ extern void *__real_vglGetProcAddress(const char *);
 extern GLboolean __real_glIsProgram(GLuint);
 extern GLboolean __real_glIsEnabled(GLenum);
 extern void __real_glGetIntegerv(GLenum, GLint *);
+extern void __real_glGetVertexAttribiv(GLuint, GLenum, GLint *);
+extern void __real_glGetVertexAttribPointerv(GLuint, GLenum, void **);
 extern GLenum __real_glGetError(void);
 extern void __real_glGetQueryObjectuiv(GLuint, GLenum, GLuint *);
 extern void __real_glBeginQuery(GLenum, GLuint);
@@ -93,7 +96,13 @@ static uint32_t st_shadow_hits, st_wakes, st_skipped;
 static int s_dedup = GL_WORKER_DEDUP;
 
 /* ---- command stream ---------------------------------------------------------- */
+#if ASLW
+/* ASLgl's calls: 16-33k a frame in busy scenes (asl_probe), and the producer
+ * runs up to a frame ahead. */
+#define RING_WORDS (1u << 20)                    /* 4 MB */
+#else
 #define RING_WORDS (1u << 18)                    /* 1 MB: stays warm in the shared L2 */
+#endif
 /* Written by the game thread only. */
 static struct {
   volatile uint32_t pub_wr;                      /* published write index */
@@ -146,9 +155,13 @@ int glw_dedup(uint32_t group, uint32_t op, const uint32_t *v, uint32_t n) {
 /* Only one thread may record (the game thread once attached; before that,
  * whoever calls). Others are logged and dropped: their command is built in a
  * throwaway buffer and never published. */
+int (*glw_foreign_hook)(void);
+
 static int foreign_thread(void) {
   uint32_t k = glw_tls_key();
   if (!R.producer_key || k == R.producer_key) return 0;
+  if (R.guest_key && k == R.guest_key) return 0;
+  if (glw_foreign_hook && glw_foreign_hook() && R.guest_key && k == R.guest_key) return 0;
   static int warned;
   if (!warned++) log_printf("[glw] GL call from a thread that is not the producer (key 0x%08x) -- dropped", (unsigned)k);
   return 1;
@@ -218,6 +231,9 @@ uint32_t glw_sync(uint32_t *a) {
   if (a == s_foreign + 1) return 0;
   uint32_t op = s_cur[0] & GLW_OP_MASK;
   st_syncs++;
+#if ASLW
+  if (op >= ASLW_OP_BASE) aslw_note_sync(op - ASLW_OP_BASE);
+#endif
   if (op < sizeof st_sync_by_op / sizeof st_sync_by_op[0]) st_sync_by_op[op]++;
   if (glw_ro.mode != 2) {
     uint32_t ret = 0;
@@ -659,6 +675,81 @@ void __wrap_glGetIntegerv(GLenum pname, GLint *data) {
   if (data && pname == GL_VIEWPORT) { memcpy(sh_viewport, data, 16); sh_viewport_known = 1; }
 }
 
+/* ASLgl on the worker (asl_worker.c): its calls reach vitaGL there, past the
+ * copy above. The recorder notes the states the game thread still reads through
+ * vitaGL directly -- the GUI clipping fix reads the scissor test and box, the
+ * engine binds framebuffers itself -- so the copy stays right. */
+void glw_note_cap(uint32_t cap, uint32_t on) {
+  int i = cap_slot(cap);
+  if (i >= 0) { sh_cap[i].cap = cap; sh_cap[i].known = 1; sh_cap[i].on = (uint8_t)on; }
+}
+void glw_note_rect(int viewport, int32_t x, int32_t y, int32_t w, int32_t h) {
+  int32_t *sh = viewport ? sh_viewport : sh_scissor;
+  sh[0] = x; sh[1] = y; sh[2] = w; sh[3] = h;
+  if (viewport) sh_viewport_known = 1; else sh_scissor_known = 1;
+}
+void glw_note_fb(uint32_t target, uint32_t fb) {
+  if (target == GL_FRAMEBUFFER) { sh_fb = fb; sh_fb_known = 1; }
+  else sh_fb_known = 0;
+}
+int glw_peek_fb(uint32_t *fb) {
+  if (!sh_fb_known) return 0;
+  *fb = sh_fb;
+  return 1;
+}
+/* vitaGL answers 1 for GL_UNPACK_ALIGNMENT whatever was set: keep the value. */
+void glw_note_unpack(uint32_t align) { sh_unpack = align; }
+
+/* While ASLgl runs on the worker, the copy above is behind vitaGL for
+ * everything but what is noted: the producer drops no repeated calls then
+ * (its own few -- framebuffer binds, queries, the blend equation -- would be
+ * judged against state ASLgl has since changed). When ASLgl comes back to the
+ * game thread, glw_resync reads the rest of the copy from vitaGL. */
+static int s_dedup_saved = -1;
+void glw_aslw_active(int on) {
+  memset(s_last, 0, sizeof s_last);
+  if (on) {
+    if (s_dedup_saved < 0) s_dedup_saved = s_dedup;
+    s_dedup = 0;
+  } else if (s_dedup_saved >= 0) {
+    s_dedup = s_dedup_saved;
+    s_dedup_saved = -1;
+  }
+}
+
+/* Run as a waited-for op (on the worker, or inline): the producer is blocked,
+ * nothing else touches vitaGL. */
+void glw_resync(void) {
+  GLint v = 0;
+  __real_glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &v); sh_array_buf = (uint32_t)v;
+  __real_glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &v); sh_elem_buf = (uint32_t)v;
+  __real_glGetIntegerv(GL_CURRENT_PROGRAM, &v); sh_prog = (uint32_t)v;
+  for (GLuint i = 0; i < ATTRS; i++) {
+    attr_t *at = &sh_attr[i];
+    GLint on = 0, buf = 0, size = 0, type = 0, norm = 0, stride = 0;
+    void *ptr = NULL;
+    __real_glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &on);
+    /* vitaGL reports an array's buffer and format only while it is enabled. */
+    if (!on) __real_glEnableVertexAttribArray(i);
+    __real_glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buf);
+    __real_glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
+    __real_glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
+    __real_glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &norm);
+    __real_glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
+    __real_glGetVertexAttribPointerv(i, GL_VERTEX_ATTRIB_ARRAY_POINTER, &ptr);
+    if (!on) __real_glDisableVertexAttribArray(i);
+    at->enabled = on != 0;
+    at->client = buf == 0;
+    at->size = size; at->type = (uint32_t)type; at->norm = (uint8_t)(norm != 0); at->stride = stride;
+    at->ptr = ptr; at->buf = (uint32_t)buf;
+    at->set = 1;
+  }
+  for (GLuint p = 1; p <= PROGS; p++) sh_prog_live[p] = __real_glIsProgram(p) ? 1 : 0;
+  memset(sh_cap, 0, sizeof sh_cap);
+  sh_fb_known = sh_scissor_known = sh_viewport_known = 0;
+  memset(s_last, 0, sizeof s_last);
+}
+
 /* Errors stay on the worker: the game only logs them. */
 GLenum __wrap_glGetError(void) {
   GLW_PROF(1);
@@ -825,6 +916,9 @@ static void execute(uint32_t *c, uint32_t *ret) {
   uint32_t op = c[0] & GLW_OP_MASK, sync = (c[0] & GLW_SYNC) != 0;
   const uint32_t *a = c + 1;
   *ret = 0;
+#if ASLW
+  if (op >= ASLW_OP_BASE) { aslw_execute(op - ASLW_OP_BASE, (int)sync, a, ret); return; }
+#endif
   if (op < GLW_OP_CUSTOM_BASE) {
     if (!glw_replay_gen(op, sync, a, ret)) log_printf("[glw] FATAL: unknown op %u", (unsigned)op);
     return;
@@ -1003,6 +1097,14 @@ void gl_worker_init(void) {
   log_printf("[glw] mode %d (%s)", glw_ro.mode, glw_ro.mode == 2 ? "worker thread" : glw_ro.mode == 1 ? "inline codec" : "off");
 }
 
+void gl_worker_set_guest(uint32_t key) {
+  __sync_synchronize();
+  R.guest_key = key;
+  __sync_synchronize();
+}
+
+uint32_t gl_worker_tls_key(void) { return glw_tls_key(); }
+
 void gl_worker_attach_producer(void) {
   R.producer_key = glw_tls_key();
   log_printf("[glw] producer attached (key 0x%08x)", (unsigned)R.producer_key);
@@ -1052,7 +1154,7 @@ static void glw_report(void) {
   st_wakes = 0;
   st_skipped = 0;
 #if GL_WORKER_DEDUP_AB
-  s_dedup = !s_dedup;
+  if (s_dedup_saved < 0) s_dedup = !s_dedup;   /* not while ASLgl is on the worker */
 #endif
 #if GL_WORKER_BATCH_AB
   s_batch = s_batch == 1 ? GL_WORKER_BATCH : 1;

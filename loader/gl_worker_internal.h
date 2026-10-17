@@ -17,6 +17,8 @@
 #define GLW_SYNC 0x4000u
 #define GLW_OP_MASK 0x3fffu
 #define GLW_OP_CUSTOM_BASE 0x0400u
+/* ASLgl's calls (asl_worker.c), when ASLW is on: ops from here up. */
+#define ASLW_OP_BASE 0x1000u
 /* Data copied into the stream per call at most; larger calls run as SYNC
  * (the worker reads the caller's memory while the caller waits). */
 #define GLW_INLINE_MAX (128u * 1024u)
@@ -77,6 +79,20 @@ uint32_t glw_sync(uint32_t *a);      /* publish, wait, return the result */
 uint32_t glw_pixels_size(int w, int h, unsigned format, unsigned type);
 /* 1 if (op, v[0..n)) repeats the last call of its state group: skip it. */
 int glw_dedup(uint32_t group, uint32_t op, const uint32_t *v, uint32_t n);
+
+/* ASLgl on the worker (asl_worker.c): run one of its ops; count a wait. */
+void aslw_execute(uint32_t op, int sync, const uint32_t *a, uint32_t *ret);
+void aslw_note_sync(uint32_t op);
+/* Keep the copy above right for vitaGL state ASLgl changes on the worker. */
+void glw_note_cap(uint32_t cap, uint32_t on);
+void glw_note_rect(int viewport, int32_t x, int32_t y, int32_t w, int32_t h);
+void glw_note_fb(uint32_t target, uint32_t fb);
+int glw_peek_fb(uint32_t *fb);
+void glw_note_unpack(uint32_t align);
+/* ASLgl moves to the worker (1) or back (0): repeats dropped or not. */
+void glw_aslw_active(int on);
+/* Back on the game thread: the copy read from vitaGL (as a waited-for op). */
+void glw_resync(void);
 
 /* Generated: replay one generated op; 0 if op is not a generated one. */
 int glw_replay_gen(uint32_t op, int sync, const uint32_t *a, uint32_t *ret);

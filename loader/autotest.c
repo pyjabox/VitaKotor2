@@ -15,11 +15,14 @@
  * Every transition is logged with the [autotest] tag. */
 
 #include <vitasdk.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "config.h"
 #include "autotest.h"
 #include "gl_patch.h"
+#include "asl_worker.h"
+#include "cpu_offload.h"
 #include "log.h"
 
 #if AUTOTEST_ENABLE
@@ -182,6 +185,67 @@ static void tick(uint64_t now) {
     break;
   default:
     set_inject(0, 128, 128, 128, 128);
+    break;
+  }
+}
+
+/* Screenshots: the loader asks, tools/vita3k_shots.sh captures the Vita3K
+ * window -- Vita3K keeps the frames on the host GPU, so a read-back here gets
+ * black. The request "<n> <what> <phase>" is written to shot.txt, closed at
+ * once (Vita3K holds back the open log's writes for seconds), and logged as
+ * "[autotest] SHOT ...": the main menu and the save list before the script presses anything,
+ * the loading screen 4 s in, and in play 5 s into each 10 s ASLW window (the
+ * A/B never switches near a shot), or every 10 s without ASLW. phase:
+ * aslw-<x>.offload-<x>, each on, off (the A/B's other half) or na (not
+ * installed). */
+static unsigned s_shots;
+static void shot(const char *what) {
+  static const char *const k_phase[] = {"na", "off", "on"};
+  int ph = aslw_phase() + 1, po = cpu_offload_phase() + 1;
+  char phase[32];
+  snprintf(phase, sizeof phase, "aslw-%s.offload-%s", k_phase[ph >= 0 && ph < 3 ? ph : 0],
+           k_phase[po >= 0 && po < 3 ? po : 0]);
+  char line[80];
+  int n = snprintf(line, sizeof line, "%03u %s %s\n", s_shots, what, phase);
+  sceIoRemove("ux0:data/kotor2/shot.txt");
+  SceUID fd = sceIoOpen("ux0:data/kotor2/shot.txt", SCE_O_WRONLY | SCE_O_CREAT, 0666);
+  if (fd >= 0) {
+    sceIoWrite(fd, line, (SceSize)n);
+    sceIoClose(fd);
+  }
+  log_printf("[autotest] SHOT %03u %s %s", s_shots++, what, phase);
+}
+
+void autotest_before_swap(uint64_t now_us) {
+  static int s_menu_shot, s_list_shot, s_loading_shot;
+  static int64_t s_last_age = -1;
+  static uint64_t s_next_us;
+  switch (s_state) {
+  case S_WAIT_MENU:
+    if (!s_menu_shot && s_menu_us && now_us - s_menu_us > 5000000u) { s_menu_shot = 1; shot("main-menu"); }
+    break;
+  case S_WAIT_SAVELIST:
+    if (!s_list_shot && s_saveload_us && s_saveload_us >= s_state_us - 2000000u && now_us - s_saveload_us > 3000000u) {
+      s_list_shot = 1;
+      shot("save-list");
+    }
+    break;
+  case S_LOADING:
+    if (!s_loading_shot && now_us - s_state_us >= 4000000u) { s_loading_shot = 1; shot("loading"); }
+    break;
+  case S_PLAY: {
+    int64_t age = aslw_window_age_us();
+    if (age >= 0) {
+      /* once per window, as it passes 5 s */
+      if (s_last_age >= 0 && s_last_age < 5000000 && age >= 5000000) shot("play");
+      s_last_age = age;
+    } else {
+      if (!s_next_us) s_next_us = s_state_us + 5000000u;
+      if (now_us >= s_next_us) { s_next_us += 10000000u; shot("play"); }
+    }
+    break;
+  }
+  default:
     break;
   }
 }

@@ -20,6 +20,18 @@ void glw_call(glw_fn_t fn, const uint32_t *args, uint32_t nargs, const void *dat
  * GL_WORKER_BATCH commands, a sync or a swap; does not wait. */
 void glw_publish(void);
 
+/* A second thread that may record while the game thread waits for it: the
+ * server AI's worker (ai_thread.c) runs client and GL code alone while the game
+ * thread is parked waiting for its pass. key 0 ends it. Only one thread records
+ * at a time: the caller guarantees the game thread is not recording meanwhile. */
+void gl_worker_set_guest(uint32_t key);
+/* The calling thread's key, as gl_worker_set_guest wants it. */
+uint32_t gl_worker_tls_key(void);
+/* Asked before a call from any thread but the game thread (or the guest) is
+ * dropped: nonzero lets it record. The AI worker uses it to wait for the
+ * drawing to end, after which it is the guest. */
+extern int (*glw_foreign_hook)(void);
+
 /* GL_WORKER_PROFILE (glw_prof.c): ASLgl draw hooks (after the engine is
  * loaded), the sampler (game thread), the worker's thread id, the report. */
 void glw_prof_install(void);

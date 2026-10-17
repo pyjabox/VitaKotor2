@@ -36,6 +36,7 @@
 #include "stall_parts.h"
 #include "mip_gpu.h"
 #include "pixel_ops.h"
+#include "asl_worker.h"
 
 #if MIPGEN_GPU
 
@@ -103,7 +104,11 @@ static GLint h_build(GLenum target, GLint ifmt, GLsizei w, GLsizei h, GLenum fmt
   }
   if (gpu) {
     t1 = sceKernelGetProcessTimeWide();
-    s_aslgl_teximage(target, 0, ifmt, nw, nh, 0, fmt, type, scaled ? scaled : data);
+    /* As the engine calls it: through the recorder when ASLgl runs on the GL
+     * worker (the glGenerateMipmap below then follows it in the stream). */
+    static teximage_t upload;
+    if (!upload) upload = (teximage_t)aslw_entry("_ZN5ASLgl12glTexImage2DEjiiiiijjPKv", (void *)s_aslgl_teximage);
+    upload(target, 0, ifmt, nw, nh, 0, fmt, type, scaled ? scaled : data);
     t2 = sceKernelGetProcessTimeWide();
     glGenerateMipmap(GL_TEXTURE_2D);
     t3 = sceKernelGetProcessTimeWide();

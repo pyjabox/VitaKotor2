@@ -64,6 +64,11 @@ add_executable(KOTOR2
   loader/occlusion_cull.c
   loader/ai_list_cache.c
   loader/ai_throttle.c
+  loader/ai_thread.c
+  loader/cpu_offload.c
+  loader/asl_probe.c
+  loader/asl_worker.c
+  loader/aslw_gen.c
   loader/threads.c
   loader/fdtrack.c
   loader/cansee_cache.c

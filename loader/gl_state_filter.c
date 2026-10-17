@@ -55,6 +55,7 @@
 #include "so_util.h"
 #include "log.h"
 #include "gl_state_filter.h"
+#include "asl_worker.h"
 
 #define GLSF_TEXPARAM_GETI_OFF 0x5db58cu  /* blx ASLgl::glGetIntegerv in glTexParameteri */
 
@@ -78,7 +79,8 @@ static void forget(void) {
   memset(s_cap, 0, sizeof s_cap);
   s_unit = s_cunit = 0;
 }
-void gl_state_filter_forget(void) { forget(); }
+void gl_state_filter_forget(void) {
+  aslw_forget();               /* the copies of ASLgl state behind the GL worker, too */ forget(); }
 
 /* States whose glIsEnabled answer is real: the ones vitaGL keeps. */
 static int verifiable(unsigned cap) {

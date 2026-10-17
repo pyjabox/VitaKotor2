@@ -18,9 +18,12 @@
 void autotest_note_open(const char *path);
 /* SDL swap hook, game thread. */
 void autotest_on_swap(uint64_t now_us);
+/* SDL swap hook, game thread, before the frame is presented. */
+void autotest_before_swap(uint64_t now_us);
 #else
 static inline void autotest_note_open(const char *path) { (void)path; }
 static inline void autotest_on_swap(uint64_t now_us) { (void)now_us; }
+static inline void autotest_before_swap(uint64_t now_us) { (void)now_us; }
 #endif
 
 #endif

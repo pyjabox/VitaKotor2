@@ -33,6 +33,10 @@
 #include "autotest.h"
 #include "ai_list_cache.h"
 #include "ai_throttle.h"
+#include "ai_thread.h"
+#include "asl_probe.h"
+#include "asl_worker.h"
+#include "cpu_offload.h"
 #include "cansee_cache.h"
 #include "gl_state_filter.h"
 #include "so_util.h"
@@ -78,6 +82,7 @@ static void SDL_GL_SwapWindow_hook(SDL_Window *w) {
   // back buffer by vglSwapBuffers, and only when we ask for it. Passing GL_TRUE
   // unconditionally would cost a sceCommonDialogUpdate every frame of the game.
   uint64_t swap_begin = sceKernelGetProcessTimeWide();
+  autotest_before_swap(swap_begin);
   vglSwapBuffers(ime_dialog_active() ? GL_TRUE : GL_FALSE);
   uint64_t swap_end = sceKernelGetProcessTimeWide();
   gl_patch_on_swap(swap_begin, swap_end);
@@ -85,6 +90,10 @@ static void SDL_GL_SwapWindow_hook(SDL_Window *w) {
   autotest_on_swap(swap_end);
   ai_list_cache_on_swap();
   ai_throttle_on_swap();
+  ai_thread_on_swap();
+  asl_probe_on_swap();
+  aslw_on_swap();
+  cpu_offload_on_swap();
   cansee_cache_on_swap();
   {
     static uint64_t prev_swap;
