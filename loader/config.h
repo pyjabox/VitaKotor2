@@ -618,6 +618,12 @@
 #ifndef RAMFILE_TLK
 #define RAMFILE_TLK               1
 #endif
+// The voice line a destroyed sound source forgets to fclose, closed for it
+// (loader/voice_close.c): one per dialogue line played, which filled the 256
+// RAM voice slots after ~512 lines, then the 64 file handles.
+#ifndef VOICE_CLOSE
+#define VOICE_CLOSE               1
+#endif
 #define RAMFILE_MAX_BYTES         (16u * 1024u * 1024u)
 // Repeated .obb reads kept in RAM (loader/obb_cache.c): the game re-reads each
 // compiled script from the archive on every run, ~1 card read of 70-100 KB per

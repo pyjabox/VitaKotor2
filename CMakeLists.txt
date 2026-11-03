@@ -68,6 +68,7 @@ add_executable(KOTOR2
   loader/cpu_offload.c
   loader/scene_cpu.c
   loader/path_cache.c
+  loader/voice_close.c
   loader/script_cache.c
   loader/asl_probe.c
   loader/asl_worker.c
