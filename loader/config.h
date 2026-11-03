@@ -774,6 +774,23 @@
 #ifndef PATH_CACHE_DEFAULT
 #define PATH_CACHE_DEFAULT        '1'
 #endif
+// Compiled scripts kept in memory after their first load (loader/script_cache.c):
+// the VM re-read every script through the resource manager on every run, 35-43%
+// of the AI in the Khoonda battle. Emptied whenever the resource set changes.
+// ux0:data/kotor2/script_mode.txt: 0 off, 1 on, a on and off every 10 s.
+#ifndef SCRIPT_CACHE
+#define SCRIPT_CACHE              1
+#endif
+#ifndef SCRIPT_CACHE_DEFAULT
+#define SCRIPT_CACHE_DEFAULT      '1'
+#endif
+// Test builds: on a hit the engine still loads the script; the bytes are compared.
+#ifndef SCRIPT_CACHE_VERIFY
+#define SCRIPT_CACHE_VERIFY       0
+#endif
+#ifndef SCRIPT_CACHE_KB
+#define SCRIPT_CACHE_KB           4096
+#endif
 // Test builds: count the engine's calls into ASLgl, its queries, client-memory
 // draws, draw and shader-setup times, and a recorder micro-benchmark, per 10 s
 // window ([aslprobe] lines; loader/asl_probe.c).
