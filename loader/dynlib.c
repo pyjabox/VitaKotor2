@@ -1217,6 +1217,11 @@ so_default_dynlib default_dynlib[] = {
   { "wcscmp", (uintptr_t)&wcscmp }, { "wcscoll", (uintptr_t)&wcscoll }, { "wcsxfrm", (uintptr_t)&wcsxfrm },
   { "wcscat", (uintptr_t)&wcscat }, { "wcscpy", (uintptr_t)&wcscpy }, { "wcsncat", (uintptr_t)&wcsncat }, { "wcsncpy", (uintptr_t)&wcsncpy },
   { "wcsrchr", (uintptr_t)&wcsrchr }, { "wcstok", (uintptr_t)&wcstok }, { "wcstombs", (uintptr_t)&wcstombs },
+  /* libkotor2 defines wcslen itself (0x5a8c34) and, for an aligned string,
+   * hands it to dlsym(RTLD_NEXT, "wcslen"): without this entry that is NULL,
+   * and the first wide key name (GetKeyNameTextW, Telos's entertainment
+   * module, 2026-10-18) jumped to address 0. wchar_t is 4 bytes on both sides. */
+  { "wcslen", (uintptr_t)&wcslen },
   { "mbrtowc", (uintptr_t)&mbrtowc }, { "wcrtomb", (uintptr_t)&wcrtomb },
   { "wmemchr", (uintptr_t)&wmemchr }, { "wmemcmp", (uintptr_t)&wmemcmp }, { "wmemcpy", (uintptr_t)&wmemcpy },
   { "wmemmove", (uintptr_t)&wmemmove }, { "wmemset", (uintptr_t)&wmemset },

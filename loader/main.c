@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <wchar.h>
 
 #include "main.h"
 #include "config.h"
@@ -4367,6 +4368,30 @@ static void dump_ini(const char *path) {
   }
 }
 
+/* libkotor2 defines wcslen and strncpy itself, and hands aligned strings to
+ * the C library's through dlsym(RTLD_NEXT, name) (helper 0x5a8c28). A name our
+ * dlsym does not know comes back NULL, and the first such call jumps to
+ * address 0: Telos's entertainment module, 2026-10-18, GetKeyNameTextW ->
+ * wcslen. Each runs once here, so the forwarding is exercised at every boot. */
+static void check_engine_forwarders(void) {
+  static const char *const names[] = {"wcslen", "strncpy"};
+  int known[2] = {0, 0};
+  for (int k = 0; k < 2; k++)
+    for (unsigned i = 0; i * sizeof(default_dynlib[0]) < (unsigned)default_dynlib_size; i++)
+      if (!strcmp(default_dynlib[i].symbol, names[k])) { known[k] = 1; break; }
+  size_t (*e_wcslen)(const wchar_t *) = (size_t (*)(const wchar_t *))so_symbol(&kotor_mod, "wcslen");
+  char *(*e_strncpy)(char *, const char *, size_t) =
+      (char *(*)(char *, const char *, size_t))so_symbol(&kotor_mod, "strncpy");
+  static const wchar_t w[] __attribute__((aligned(4))) = L"forward";
+  static char out[16] __attribute__((aligned(4)));
+  long n = -1;
+  const char *s = "not run";
+  if (known[0] && e_wcslen) n = (long)e_wcslen(w);
+  if (known[1] && e_strncpy) { e_strncpy(out, "forward", sizeof out); s = out; }
+  log_printf("[resolve] engine forwarders: wcslen %s (%ld, expect 7), strncpy %s (\"%s\")",
+             known[0] ? "known" : "MISSING from dlsym", n, known[1] ? "known" : "MISSING from dlsym", s);
+}
+
 static void install_sound_probe(void) {
   dump_ini(DATA_PATH "/swkotor2.ini");
   // The one global that can suppress all of sound. GameInit is its only writer,
@@ -4916,6 +4941,7 @@ int main(int argc, char *argv[]) {
   scene_cpu_install();
   path_cache_install();
   voice_close_install();
+  check_engine_forwarders();
   script_cache_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
