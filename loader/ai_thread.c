@@ -63,6 +63,7 @@
 #include "ai_thread.h"
 #include "gl_worker.h"
 #include "ai_throttle.h"
+#include "ai_budget.h"
 #include "pc_prof.h"
 
 #if AI_THREAD
@@ -406,7 +407,7 @@ static void diag_end_level(void) {
 static void diag_pass_start(int arm) {
   d_arm = arm;
   d_level = -1;
-  d_remaining = 10000;
+  d_remaining = ai_budget_us();
   d_passes[arm]++;
   d_pass_t0 = now_us();
   d_pass_cpu0 = thread_cpu_us();
@@ -584,8 +585,8 @@ static void *worker_main(void *arg) {
   sceKernelChangeThreadCpuAffinityMask(0, CPU_AUX_A);
   sceKernelChangeThreadPriority(0, AI_THREAD_PRIORITY);
   thread_census_add(sceKernelGetThreadId(), "ai-worker");
-#if PC_PROF && PC_PROF_TARGET_AI
-  pc_prof_retarget(sceKernelGetThreadId(), lo, hi);
+#if PC_PROF
+  pc_prof_note_ai(sceKernelGetThreadId(), lo, hi);
 #endif
   s_worker_glkey = gl_worker_tls_key();
   s_wstack_lo = lo;

@@ -780,6 +780,11 @@
 #ifndef PATH_CACHE_DEFAULT
 #define PATH_CACHE_DEFAULT        '1'
 #endif
+// Diagnostics: log every mine a creature enters, when the engine handles it and
+// whether it may fire ([mine] lines; loader/mine_trace.c). Test builds only.
+#ifndef MINE_TRACE
+#define MINE_TRACE                0
+#endif
 // Compiled scripts kept in memory after their first load (loader/script_cache.c):
 // the VM re-read every script through the resource manager on every run, 35-43%
 // of the AI in the Khoonda battle. Emptied whenever the resource set changes.
@@ -830,6 +835,9 @@
 #define PC_PROF_PERIOD_US         3000
 #ifndef PC_PROF_TARGET_AI
 #define PC_PROF_TARGET_AI         0               /* sample the AI worker instead of the game thread */
+#endif
+#ifndef PC_PROF_CYCLE
+#define PC_PROF_CYCLE             0               /* 10 s windows: nothing, game thread, nothing, AI worker */
 #endif
 // Rooms beyond the distance in ux0:data/kotor2/room_distance.txt are not drawn
 // (loader/room_dist.c, opt-in). Test builds (ROOM_AB): beyond ROOM_AB_RADIUS_M

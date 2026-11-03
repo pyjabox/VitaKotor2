@@ -42,6 +42,7 @@
 #include "scene_cpu.h"
 #include "path_cache.h"
 #include "voice_close.h"
+#include "mine_trace.h"
 #include "script_cache.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
@@ -4942,6 +4943,7 @@ int main(int argc, char *argv[]) {
   path_cache_install();
   voice_close_install();
   check_engine_forwarders();
+  mine_trace_install();
   script_cache_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */

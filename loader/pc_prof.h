@@ -10,4 +10,11 @@ void pc_prof_start(void);
 #include <stdint.h>
 void pc_prof_retarget(int thid, uintptr_t stk_lo, uintptr_t stk_hi);
 
+/* The AI worker at its start: sampled instead of the game thread
+ * (PC_PROF_TARGET_AI) or in the cycle's AI windows (PC_PROF_CYCLE). */
+void pc_prof_note_ai(int thid, uintptr_t stk_lo, uintptr_t stk_hi);
+
+/* Each frame (PC_PROF_CYCLE): the window clock. */
+void pc_prof_on_swap(void);
+
 #endif

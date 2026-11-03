@@ -7,5 +7,7 @@
 void ai_budget_install(void);
 /* The same with another budget, in microseconds (10000: the engine's own). */
 void ai_budget_install_us(unsigned us);
+/* The budget UpdateState shares out, in microseconds. */
+unsigned ai_budget_us(void);
 
 #endif

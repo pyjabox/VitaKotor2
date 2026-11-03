@@ -22,7 +22,13 @@
  * functions by self samples (PC) and inclusive samples (PC + frame chain),
  * as a share of the game thread's samples. Names are the mangled dynamic
  * symbols; a PC past a symbol's size is shown as "~name" (a non-exported
- * function after it). */
+ * function after it).
+ *
+ * PC_PROF_CYCLE: the 10 s windows follow the frame clock instead, as the
+ * other modules' windows do (pc_prof_on_swap), in a cycle of four: nothing
+ * sampled, the game thread, nothing, the AI worker. The unsampled windows
+ * measure the build as it ships; a [pcprof] window line says which is which,
+ * and the raw file's sample times place each sample in its window. */
 
 #include <vitasdk.h>
 #include <kubridge.h>
@@ -91,6 +97,13 @@ static uint32_t *s_raw;
 static volatile uint32_t s_raw_head, s_raw_tail;  /* free-running; head: sample owner, tail: sampler */
 static uint32_t s_raw_drops, s_raw_written;
 static SceUID s_raw_fd = -1;
+
+#if PC_PROF_CYCLE
+static SceUID s_main_th = -1, s_ai_th = -1;
+static uintptr_t s_main_lo, s_main_hi, s_ai_lo, s_ai_hi;
+static volatile uint32_t s_paused = 1;       /* the cycle opens with an unsampled window */
+static volatile uint32_t s_report_req;       /* 1: a window ended, 2: a sampled one */
+#endif
 
 static volatile uint32_t s_testing, s_test_faults;
 static uintptr_t s_test_lo;
@@ -178,6 +191,17 @@ static int retry(volatile uint32_t *counter, uintptr_t pc) {
   return 1;
 }
 
+/* A translation fault (short-descriptor status 0x5 section, 0x7 page) in the
+ * engine's segment but outside the protected range: the remap of the range
+ * took its 1 MB section with it for a moment (hardware 2026-10-17, Khoonda:
+ * the game thread fetched a PLT stub at +0x276f08, below the range at
+ * +0x2bd000, 10 ms after the profiler armed; FSR 0x5). Retried like a fault in
+ * the range; retry() still hands a fault that never clears to the crash report. */
+static int transient_nearby(uint32_t fsr, uintptr_t addr) {
+  uint32_t fs = (fsr & 0xf) | ((fsr >> 6) & 0x10);
+  return (fs == 0x5 || fs == 0x7) && addr >= s_eng_lo && addr < s_eng_hi;
+}
+
 /* The first fault after arming is the sample. */
 static int take(KuKernelExceptionContext *c, uintptr_t pc) {
   if (!__sync_bool_compare_and_swap(&s_state, ST_ARMED, ST_TAKEN)) return 0;
@@ -197,7 +221,8 @@ __attribute__((used)) static void prefetch_handler(KuKernelExceptionContext *c) 
     kuKernelMemProtect((void *)s_test_lo, 0x1000, KU_KERNEL_PROT_READ | KU_KERNEL_PROT_EXEC);
     return;
   }
-  if (pc < s_lo || pc >= s_hi) {               /* not ours */
+  if (pc < s_lo || pc >= s_hi) {               /* not ours, unless the remap hid it */
+    if (transient_nearby(c->FSR, pc) && retry(&s_retry_fetch, pc)) return;
     pass_on(s_old_prefetch, c);
     return;
   }
@@ -214,6 +239,8 @@ __attribute__((used)) static void data_handler(KuKernelExceptionContext *c) {
     uintptr_t pc = c->pc & ~(uintptr_t)1;
     if (take(c, pc)) { s_data_samples++; return; }
     if (retry(&s_retry_data, pc)) return;
+  } else if (transient_nearby(c->FSR, c->FAR) && retry(&s_retry_data, c->pc & ~(uintptr_t)1)) {
+    return;
   }
   pass_on(s_old_data, c);
 }
@@ -374,7 +401,11 @@ static int sampler(SceSize args, void *argp) {
     /* Keep the cost a sample puts on the sampled thread under ~10%. */
     sceKernelDelayThread(PC_PROF_PERIOD_US + 9u * cost);
     if (s_disabled) continue;
+#if PC_PROF_CYCLE
+    if (s_state == ST_IDLE && !s_paused) {
+#else
     if (s_state == ST_IDLE) {
+#endif
       uint64_t t0 = sceKernelGetProcessTimeWide();
       s_state = ST_ARMING;
       __sync_synchronize();
@@ -389,6 +420,17 @@ static int sampler(SceSize args, void *argp) {
     if (taken) cost = s_sample_us / taken;
     raw_flush(16384);
     uint64_t now = sceKernelGetProcessTimeWide();
+#if PC_PROF_CYCLE
+    uint32_t req = s_report_req;
+    if (req) {
+      while (s_state != ST_IDLE && !s_disabled) sceKernelDelayThread(100);
+      raw_flush(0);
+      if (req == 2) report((uint32_t)(now - t_win), arms, arm_us);
+      s_report_req = 0;
+      arms = arm_us = 0;
+      t_win = sceKernelGetProcessTimeWide();
+    }
+#else
     if (now - t_win >= 10000000u) {
       /* Report with the engine executable, so no sample lands mid-report. */
       while (s_state != ST_IDLE && !s_disabled) sceKernelDelayThread(100);
@@ -397,6 +439,7 @@ static int sampler(SceSize args, void *argp) {
       arms = arm_us = 0;
       t_win = sceKernelGetProcessTimeWide();
     }
+#endif
   }
   return 0;
 }
@@ -409,6 +452,50 @@ void pc_prof_retarget(int thid, uintptr_t stk_lo, uintptr_t stk_hi) {
   __sync_synchronize();
   s_game = thid;
   log_printf("[pcprof] sampling thread 0x%x now (stack %08x-%08x)", (unsigned)thid, (unsigned)stk_lo, (unsigned)stk_hi);
+}
+
+/* The AI worker, from its start (before pc_prof_start): the thread the
+ * cycle's fourth window samples. */
+void pc_prof_note_ai(int thid, uintptr_t stk_lo, uintptr_t stk_hi) {
+#if PC_PROF_TARGET_AI
+  pc_prof_retarget(thid, stk_lo, stk_hi);
+#elif PC_PROF_CYCLE
+  s_ai_lo = stk_lo;
+  s_ai_hi = stk_hi;
+  s_ai_th = thid;
+#else
+  (void)thid; (void)stk_lo; (void)stk_hi;
+#endif
+}
+
+/* PC_PROF_CYCLE: every 10 s of frames, the next window. The thread to sample
+ * changes while nothing is being sampled. */
+void pc_prof_on_swap(void) {
+#if PC_PROF_CYCLE
+  static uint64_t t0;
+  static uint32_t phase;
+  if (s_main_th < 0) return;                   /* not started */
+  uint64_t now = sceKernelGetProcessTimeWide();
+  if (!t0) { t0 = now; log_printf("[pcprof] window 0: nothing sampled"); return; }
+  if (now - t0 < 10000000u) return;
+  t0 = now;
+  uint32_t ended_sampled = phase & 1;
+  phase = (phase + 1) & 3;
+  const char *what = "nothing sampled";
+  if (phase & 1) {
+    what = s_game == s_ai_th ? "AI worker" : "game thread";
+    s_paused = 0;
+  } else {
+    s_paused = 1;
+    int ai = phase == 2 && s_ai_th >= 0;       /* next: the AI worker after the game thread */
+    s_stk_lo = ai ? s_ai_lo : s_main_lo;
+    s_stk_hi = ai ? s_ai_hi : s_main_hi;
+    __sync_synchronize();
+    s_game = ai ? s_ai_th : s_main_th;
+  }
+  s_report_req = ended_sampled ? 2 : 1;
+  log_printf("[pcprof] window %u: %s", (unsigned)phase, what);
+#endif
 }
 
 void pc_prof_start(void) {
@@ -452,11 +539,17 @@ void pc_prof_start(void) {
                        (uint32_t)s_lo, (uint32_t)s_hi};
     sceIoWrite(s_raw_fd, hdr, sizeof hdr);
   }
+#if PC_PROF_CYCLE
+  s_main_lo = s_stk_lo;
+  s_main_hi = s_stk_hi;
+  s_main_th = s_game;
+#endif
   SceUID th = sceKernelCreateThread("pcprof", sampler, 100, 0x4000, 0, SCE_KERNEL_CPU_MASK_USER_2, NULL);
   rc = th >= 0 ? sceKernelStartThread(th, 0, NULL) : th;
   log_printf("[pcprof] ON (rc 0x%x): self-test ok, %d functions, code 0x%08x-0x%08x, game stack 0x%08x-0x%08x, "
-             "every %u us, raw file fd 0x%x", rc, s_nfn, (unsigned)s_lo, (unsigned)s_hi, (unsigned)s_stk_lo,
-             (unsigned)s_stk_hi, (unsigned)PC_PROF_PERIOD_US, (unsigned)s_raw_fd);
+             "every %u us, raw file fd 0x%x%s", rc, s_nfn, (unsigned)s_lo, (unsigned)s_hi, (unsigned)s_stk_lo,
+             (unsigned)s_stk_hi, (unsigned)PC_PROF_PERIOD_US, (unsigned)s_raw_fd,
+             PC_PROF_CYCLE ? "; 10 s windows: nothing, game thread, nothing, AI worker" : "");
 }
 
 #endif

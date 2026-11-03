@@ -34,6 +34,7 @@
 
 #define AI_BUDGET_OFF 0x4a7e00u
 static const uint8_t k_engine_insn[] = {0x42, 0xf2, 0x10, 0x74};   /* movw r4, #10000 */
+static unsigned s_us = 10000;
 
 /* Thumb-2 MOVW r4, #imm16 (encoding T3). */
 static void movw_r4(uint8_t out[4], uint16_t imm) {
@@ -58,5 +59,8 @@ void ai_budget_install_us(unsigned us) {
   movw_r4(insn, (uint16_t)us);
   kuKernelCpuUnrestrictedMemcpy(at, insn, sizeof insn);
   kuKernelFlushCaches(at, sizeof insn);
+  s_us = us;
   log_printf("[aibudget] server AI budget 10000 -> %u us per frame", us);
 }
+
+unsigned ai_budget_us(void) { return s_us; }

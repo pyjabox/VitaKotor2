@@ -38,7 +38,9 @@
 #include "asl_worker.h"
 #include "cpu_offload.h"
 #include "scene_cpu.h"
+#include "pc_prof.h"
 #include "path_cache.h"
+#include "mine_trace.h"
 #include "script_cache.h"
 #include "cansee_cache.h"
 #include "gl_state_filter.h"
@@ -99,8 +101,12 @@ static void SDL_GL_SwapWindow_hook(SDL_Window *w) {
   cpu_offload_on_swap();
   scene_cpu_on_swap();
   path_cache_on_swap();
+  mine_trace_on_swap();
   script_cache_on_swap();
   cansee_cache_on_swap();
+#if PC_PROF
+  pc_prof_on_swap();
+#endif
   {
     static uint64_t prev_swap;
     gl_state_filter_on_swap(prev_swap ? swap_end - prev_swap : 0);
