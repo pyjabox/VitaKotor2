@@ -820,8 +820,11 @@ rendering defects.
 | v0.5.5 eboot | `248252a9c332db4df102d595bc8aa2738125f9bd18966660be772d8b485263bd` |
 | v0.5.6 eboot | `c4351e83529a9ee6c5376c291f6799e047ac3fe0341c7880f8e4c7e6a61e7006` |
 | v0.5.7 eboot | `0f9337385a3bff9d14b4b6ec50c63f7a0c44b3584ce875b229f2a7902cb6f770` |
+| v0.5.8 eboot | `0f3098876ad3d3ac7cc7f84a071cf66bf395d9e6d155a0f832b45624b2cdd626` |
 
 ## 15. Current decision
+
+v0.5.8 is v0.5.7 with work moved off the game thread and four fixes. Hardware, Telos, each A/B in alternating 10 s windows: the server AI on core 1 while Scene::Render draws (loader/ai_thread.c; 22.3 against 19.5 FPS), ASLgl and gles2-bc on the GL worker, recorded by the game thread (loader/asl_worker.c, docs/specs/GL_ASL_WORKER.md; 18.4 against 14.6 FPS), FTFont widths cached and texture controllers rebuilt on core 1 (loader/cpu_offload.c, docs/specs/CPU_OFFLOAD.md; 21.5 against 17.5 FPS, 46.5 against 57.2 ms frames), light lists de-duplicated with a hash set (1.5–3.0 against 3.2–4.6 ms) and gobs not drawn animated one frame in three (0.75 against 1.48 ms; loader/scene_cpu.c), failed ClosestPathPoint searches remembered (loader/path_cache.c; worst frame 60–92 against 165–194 ms). Battle of Khoonda (TSLRCM): compiled scripts kept in memory (loader/script_cache.c; AI CPU per pass 39.8 against 76.0 ms, 44.1 against 28.5 objects updated per frame, 158 against 192 ms frames). Fixes: the engine's per-thread block for our worker threads (loader/threads.c), the voice-line FILE the sound-source destructor drops (loader/voice_close.c: all 64 handles taken after ~512 lines with a voice pack), and wcslen in the dlsym table (Telos cantina, PC 0).
 
 v0.5.7 is v0.5.6 with German and Italian in the order libkotor2 expects (issue #1: German 3, Italian 2, as the APK's `getCurrentLanguage`), and two races in the mixer closed (loader/audio_patch.c): the audio thread now takes a stream's restart flag in its locked snapshot, and the queue of released streams is a list that never fills. `[snd-gap]` also reports what the audio port held before each grain (`sceAudioOutGetRestSample`; issue #5). Frame rate was not measured again.
 

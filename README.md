@@ -14,7 +14,7 @@ audio backend over `sceAudiodec` and `sceAudioOut`.
 
 ## Current Status
 
-**Playable work in progress (v0.5.7). Core gameplay and the major
+**Playable work in progress (v0.5.8). Core gameplay and the major
 platform-integration paths work on physical Vita. In the tested gameplay the
 game averages about 25 FPS: about 19–20 FPS in the busiest scenes and 34–37 FPS
 in light ones, up from about 13 FPS in v0.2.0. v0.4.0 removed most of the
@@ -33,7 +33,11 @@ v0.5.4 makes scripted doors and objects work again in busy areas, such as the
 airlock in Peragus's dormitories. v0.5.5 fixes the black screen on Telos when
 the apartments load after the fight with Batu Rem. v0.5.6 fixes rooms that stop
 responding, and saves that come out empty, when a voice pack is installed.
-v0.5.7 fixes German and Italian, which were swapped.
+v0.5.7 fixes German and Italian, which were swapped. v0.5.8 puts the Vita's
+other two cores to work: the AI runs beside the drawing, and the game's GL
+translation on the GL worker. It also fixes saving, the save list and the
+voices failing after a long session with a voice pack, and a crash in Telos's
+cantina.
 Performance tuning and broad playthrough validation remain active.**
 
 ### Working and validated
@@ -244,17 +248,49 @@ What is enabled by default:
     waited to be closed was closed while it could still be decoding. The log
     now also says when the audio port ran dry (issue #5).
 
+- **New in v0.5.8:**
+  - **More cores at work** (hardware, Telos, each change measured on and off
+    in alternating 10 s windows):
+    - **The AI runs on core 1 while the game thread draws the scene**
+      (22.3 against 19.5 FPS). Wherever the AI reaches into the client side,
+      it waits for the drawing to end, so the two never touch the same data.
+    - **The game's GL translation (ASLgl) runs on the GL worker**, recorded on
+      the game thread and replayed there (18.4 against 14.6 FPS).
+    - **Text widths are cached, and animated textures (water, ripples) are
+      rebuilt on core 1** (21.5 against 17.5 FPS).
+  - **Smaller savings:** light lists are built without repeated scans (about
+    1.5 ms a frame), and creatures not drawn this frame are animated one frame
+    in three (about 0.7 ms).
+  - **Periodic hitch:** a creature with no clear path re-planned it every few
+    seconds, at about 110 ms a try (Telos). Searches that fail on the walkmesh
+    alone are now remembered until the next load: worst frames of 60–92 ms
+    instead of 165–194 ms.
+  - **Large fights:** compiled scripts stay in memory after their first load,
+    instead of being read again on every run. In the battle of Khoonda
+    (TSLRCM, 20+ fighters) that halves the AI's work: 55% more creatures are
+    updated per frame, and frames take 158 instead of 192 ms.
+  - **Saving, the save list and the voices failing after a long session with
+    a voice pack:** the game forgot to close the file of every dialogue line
+    it played. After about 512 lines (one to two hours) all 64 files a Vita
+    app may hold were taken: saving failed, Load Game listed nothing, and the
+    voices fell back to English. The loader now closes what the game forgets.
+    Voices from the game's archive leaked too, more slowly.
+  - **Telos's cantina:** a crash there (a black screen at 30 FPS with no
+    sound) made saves in that module look as if they would not load. The
+    game asked the loader for a C library function by name (`wcslen`), which
+    the loader did not provide; it does now.
+
 ### Remaining limitations
 
 | Area | Current behavior |
 |---|---|
 | Startup | The screen is black for about 5 s, then shows the loading screen; it stops moving when the game takes over (about 19 s in) and stays up until the legal screen. A cold launch can take roughly two minutes while archives are scanned and shaders compile, and the loading screen can sit still for much of it. Wait before assuming the process has hung. Later launches reach the title in about 24 s; about one launch in three takes about 11 s longer, in the engine's scan of `dlc/` (cause not yet known). |
-| Performance | Heavy scenes remain CPU-bound, mostly in the engine's per-object rendering work: about 19–20 FPS in the busiest tested scenes. A 10 m distance filter can reduce draws further but remains too experimental for releases. See the [performance reference](docs/specs/PERFORMANCE.md). |
+| Performance | Heavy scenes remain CPU-bound, mostly in the engine's per-object rendering work: about 21 FPS in the busiest tested scene (Telos). Very large fights are much slower: the battle of Khoonda with TSLRCM (20+ fighters) runs at about 6 FPS. A 10 m distance filter can reduce draws further but remains too experimental for releases. See the [performance reference](docs/specs/PERFORMANCE.md). |
 | Visual changes | There are no dynamic shadows: the loader sets the game's own `Shadows=0` (and `Soft Shadows=0`) in `swkotor2.ini` at every launch. The in-game option still works until the next launch. The mobile bloom passes are skipped (no game option controls them). Rooms keep their baked lighting. |
 | Languages | The menu before the game is in English. In a language other than English, mods' additions can be English: see [Mods and languages](#mods-and-languages). |
-| AI updates | Creatures in combat, acting or walking, and objects with a scripted order waiting get their AI update every frame. Idle creatures, placeables, doors and items are updated every third frame. Nothing was noticed in testing, but idle characters may react up to two frames later. |
+| AI updates | Creatures in combat, acting or walking, and objects with a scripted order waiting get their AI update every frame. Idle creatures, placeables, doors and items are updated every third frame. Nothing was noticed in testing, but idle characters may react up to two frames later. The engine gives its AI 10 ms a frame: in very large fights that runs out, and creatures of lower priority act only every few frames (some may seem idle). `ai_mode.txt` containing a number of milliseconds (1 to 65) raises it, at a cost in frame rate. Creatures not drawn in a frame are animated one frame in three. |
 | Audio | Known issue: in busy scenes, such as Telos, a noise can be heard behind the sound. The decoders and the mix were checked and are clean; the cause is not known yet ([issue #5](https://github.com/pyjabox/VitaKotor2/issues/5)). |
-| Latency | The GL worker lets the game run up to one frame ahead of the display. An object stepping out from cover can appear up to three frames late (occlusion culling). |
+| Latency | The GL worker lets the game run up to one frame ahead of the display, and the AI's decisions reach the screen one frame later. An object stepping out from cover can appear up to three frames late (occlusion culling). |
 | Hitches | Occasional single frames of about 0.12–0.23 s remain when new content is first read from the memory card (about 10 MB/s): the minimap's first draw, dialog entries and their voices, creatures spawned by scripts. Loading-screen images still take about 0.1–0.35 s each. |
 | Shader cache | Releases use the validated cache-enabled/no-`LOG_ERRORS` vitaGL recipe, which removes major first-use shader stalls and includes a uniform-overflow clamp. An older cache experiment faulted on a warm launch, so cache recovery remains documented and broader validation is ongoing. |
 | Validation | The tested routes, saves, menus, audio, and movies work, but a complete start-to-finish playthrough has not yet been certified. |
@@ -549,6 +585,12 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Image problems you suspect the GPU mipmaps of | Create `ux0:data/kotor2/mipgen_mode.txt` containing `0` and relaunch. The engine then builds every mip chain on the CPU, as in v0.3.0. Delete the file to turn it back on. |
 | Problems at startup you suspect the loading screen of | Create `ux0:data/kotor2/loadscreen_mode.txt` containing `0` and relaunch. The screen then stays black until the legal screen, as in v0.4.2. Delete the file to bring it back. |
 | AI problems you suspect the port's AI changes of | Create `ux0:data/kotor2/ai_mode.txt` containing `0` and relaunch. The server AI then updates every object every frame, as the original game does (slower in busy areas). Delete the file to go back. |
+| Problems you suspect the AI thread of | Create `ux0:data/kotor2/ai_thread.txt` containing `0` and relaunch. The AI then runs on the game thread, as in v0.5.7. Delete the file to go back. |
+| Rendering problems you suspect the GL translation on the GL worker of | Create `ux0:data/kotor2/aslw_mode.txt` containing `0` and relaunch. ASLgl then runs on the game thread, as in v0.5.7. Delete the file to go back. |
+| Text or animated-texture problems | Create `ux0:data/kotor2/offload_mode.txt` containing `0` and relaunch. Text widths are then measured, and animated textures rebuilt, on the game thread, as in v0.5.7. Delete the file to go back. |
+| Lighting or off-screen animation problems | Create `ux0:data/kotor2/scene_mode.txt` containing `0` and relaunch. The engine's own light lists are used, and every creature is animated every frame, as in v0.5.7. Delete the file to go back. |
+| Creatures that cannot find their way | Create `ux0:data/kotor2/path_mode.txt` containing `0` and relaunch. No failed path search is remembered, as in v0.5.7. Delete the file to go back. |
+| Script problems | Create `ux0:data/kotor2/script_mode.txt` containing `0` and relaunch. Scripts are then read from the archive on every run, as in v0.5.7. Delete the file to go back. |
 | Input problems you suspect the touchscreen of | Create `ux0:data/kotor2/touch_mode.txt` containing `0` and relaunch. The game then uses the buttons only, as in v0.4.2. Delete the file to bring touch back. |
 | Graphics problems you suspect the vertex-program pool of | Create `ux0:data/kotor2/patcher_mode.txt` containing `0` and relaunch. vitaGL's requests then go straight to the shader patcher and nothing is freed, as in v0.4.2; the pool stays at 4 MB. Delete the file to turn it back on. |
 | You want more than 30 FPS in light scenes | Create `ux0:data/kotor2/fps_cap.txt` containing `0` and relaunch. `LockFramerate=1` under `[Graphics Options]` in `swkotor2.ini` then caps the game again, and `V-Sync=0` turns vsync off (measured no faster). Delete the file to bring the cap back. |
