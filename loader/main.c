@@ -4908,6 +4908,7 @@ int main(int argc, char *argv[]) {
 #endif
   install_gui_viewport_fix();
   // Last: it takes over slots whatever the installers above left in them.
+  thread_engine_tls_setup();      /* before any worker of ours runs engine code */
   ai_thread_install();
   cpu_offload_install();
   scene_cpu_install();

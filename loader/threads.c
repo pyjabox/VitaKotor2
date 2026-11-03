@@ -7,6 +7,8 @@
 #include "config.h"
 #include "threads.h"
 #include "log.h"
+#include "so_util.h"
+#include "main.h"
 
 #define CENSUS_MAX 48
 
@@ -53,6 +55,30 @@ void thread_census_add_ex(SceUID thid, const char *tag, int pin_mask, int pin_pr
   c->old_mask = old_mask; c->old_prio = old_prio;
   c->last_run = 0;
   __atomic_store_n(&c->used, 1, __ATOMIC_RELEASE);
+}
+
+static int (*g_tls_is_init)(void);
+static void (*g_tls_init)(void);
+static volatile int g_tls_state;     /* 0 not looked up yet, 1 ready, 2 symbols missing */
+
+void thread_engine_tls_setup(void) {
+  g_tls_is_init = (int (*)(void))so_symbol(&kotor_mod, "_Z23ASLAutoTLSIsInitializedv");
+  g_tls_init = (void (*)(void))so_symbol(&kotor_mod, "_Z37ASLInitAutoTLSStorageForCurrentThreadv");
+  __sync_synchronize();
+  g_tls_state = g_tls_is_init && g_tls_init ? 1 : 2;
+  if (g_tls_state == 2)
+    log_printf("[thread] engine thread storage: symbols not found; our workers run without it");
+}
+
+int thread_engine_tls_init(void) {
+  int st = g_tls_state;
+  if (st == 0) return 0;
+  if (st == 2) return 1;
+  __sync_synchronize();
+  if (!g_tls_is_init()) return 0;
+  g_tls_init();
+  log_printf("[thread] engine thread storage set up for thread 0x%08x", (unsigned)sceKernelGetThreadId());
+  return 1;
 }
 
 void thread_pin_self(int mask, const char *tag) {

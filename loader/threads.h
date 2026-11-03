@@ -49,6 +49,19 @@ static inline void thread_census_add(SceUID thid, const char *tag) {
   thread_census_add_ex(thid, tag, 0, 0, 0, 0);
 }
 
+/* libkotor2's per-thread variables (ASL "auto TLS": SetLastError's value, the
+ * thread locale and two more) live in a block each thread must be given:
+ * the engine's threads get it from ThreadHANDLE::ThreadProc and
+ * ASL::PrepareMainThread. A thread of ours that runs engine code without one
+ * reads TlsGetValue == NULL and writes near address 0 (AI worker, 2026-10-17:
+ * sLastErrorTLS_t::operator= faulted at FAR 0x30). Call this from the thread
+ * itself until it returns 1: 0 before thread_engine_tls_setup or while the
+ * engine has not created its storage key yet (the block would be lost), 1
+ * once the block is set (or the symbols are missing, logged once). */
+int thread_engine_tls_init(void);
+/* Looks the engine's functions up; main thread, once libkotor2 is loaded. */
+void thread_engine_tls_setup(void);
+
 /* THREAD_PINNING_AB: apply the pinned layout (1) or the old one (0) to every
  * recorded thread. */
 void thread_layout_apply(int pinned);

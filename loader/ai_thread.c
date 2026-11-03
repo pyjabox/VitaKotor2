@@ -591,8 +591,10 @@ static void *worker_main(void *arg) {
   s_wstack_lo = lo;
   __sync_synchronize();
   s_wstack_hi = hi;
+  int engine_tls = 0;
   for (;;) {
     sceKernelWaitEventFlag(s_ev, EV_GO, SCE_EVENT_WAITAND | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
+    if (!engine_tls) engine_tls = thread_engine_tls_init();   /* SetLastError & co. (threads.h) */
     s_p_waited = 0;
     s_p_before_us = 0;
     s_tc_live = 0;                   /* UpdateState's first clock read starts the CPU clock */

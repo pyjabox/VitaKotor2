@@ -268,8 +268,10 @@ static void *worker_main(void *arg) {
   sceKernelChangeThreadPriority(0, CPU_OFFLOAD_PRIORITY);
   thread_census_add(sceKernelGetThreadId(), "texctl-worker");
   s_worker_key = tls_key();
+  int engine_tls = 0;
   for (;;) {
     sceKernelWaitEventFlag(s_ev, EV_WORK, SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT, NULL, NULL);
+    if (!engine_tls) engine_tls = thread_engine_tls_init();   /* SetLastError & co. (threads.h) */
     for (;;) {
       int i = -1;
       for (int k = 0; k < 2 && i < 0; k++) {

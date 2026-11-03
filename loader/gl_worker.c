@@ -988,6 +988,7 @@ static int worker_main(SceSize args, void *argp) {
   log_printf("[glw] worker running (key 0x%08x)", (unsigned)glw_ro.worker_key);
   uint32_t rd = 0, unstored = 0;
   uint64_t run_t0 = 0;                /* start of the current run of commands */
+  int engine_tls = 0;
   for (;;) {
     if (rd == P.pub_wr) {
       /* Caught up: store the read index and close the busy run (timing per
@@ -1020,7 +1021,12 @@ static int worker_main(SceSize args, void *argp) {
       continue;
     }
     GLW_PROF_WORKER(2);
-    if (!run_t0) run_t0 = sceKernelGetProcessTimeWide();
+    if (!run_t0) {
+      run_t0 = sceKernelGetProcessTimeWide();
+      /* ASLgl runs here with ASLW: give this thread libkotor2's per-thread
+       * block (threads.h). Checked once per run of commands, not per command. */
+      if (!engine_tls) engine_tls = thread_engine_tls_init();
+    }
     uint32_t ret = 0;
     execute(c, &ret);
     if ((h & GLW_OP_MASK) == COP_SWAP) {
