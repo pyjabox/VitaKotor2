@@ -802,6 +802,20 @@
 #ifndef SCRIPT_CACHE_KB
 #define SCRIPT_CACHE_KB           4096
 #endif
+// ProceduralAnimateHierarchy with the engine's generator inline and the
+// remainder by multiplication (loader/proc_anim.c): 7.4% of the game thread in
+// the Khoonda battle. ux0:data/kotor2/proc_mode.txt: 0 off, 1 on, a on and off
+// every 10 s. Hardware, battle: 2.9-3.2 against 6.2-7.0 ms a frame.
+#ifndef PROC_ANIM
+#define PROC_ANIM                 1
+#endif
+#ifndef PROC_ANIM_DEFAULT
+#define PROC_ANIM_DEFAULT         '1'
+#endif
+// Test builds: every mesh also animated with the engine's rand and %, compared.
+#ifndef PROC_ANIM_VERIFY
+#define PROC_ANIM_VERIFY          0
+#endif
 // Test builds: keep the last N launches' logs as log-prev1.txt (newest) ...
 #ifndef LOG_KEEP_PREVIOUS
 #define LOG_KEEP_PREVIOUS         0

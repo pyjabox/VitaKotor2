@@ -75,6 +75,7 @@ add_executable(KOTOR2
   loader/plt_direct.c
   loader/menu_cache.c
   loader/leaf_fast.c
+  loader/proc_anim.c
   loader/asl_probe.c
   loader/asl_worker.c
   loader/aslw_gen.c

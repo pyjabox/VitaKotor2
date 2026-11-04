@@ -541,6 +541,12 @@ libkotor2 is already ARMv7 code: Android NDK clang 9, Thumb-2, VFPv3 with NEON, 
   - particles about 20% (DoEmitterBucket 8%, AnimateParticles 6.8%, ExplosionEmitter::Update 6.1%, PartOutside 4.3%, EmitterOrderCmp 3.2%);
   - client AI (CClientAIMaster::UpdateState) 15%; Scene::HitCheck 10.5%;
   - server-to-client updates 5.5% plus their handling 5.4%; PopulateMenus 5.6%.
+- **ProceduralAnimateHierarchy** (`loader/proc_anim.c`, `PROC_ANIM`, on by default). It animates procedural meshes' texture coordinates: per vertex a UV scroll, then two `rand_wincompatible() % n` jitters clamped to the base ± A/2. Each random number was a call through the PLT, plus a libgcc division (the Cortex-A9 has no divide).
+  - Ours inlines the engine's generator (`stWinRandSeed`, 214013/2531011) and takes the remainder by multiplication (`fastmod.h`; `tools/test_fastmod.c` checks it against `%` for every x below 2^16 and every n up to 70,000). It keeps the same floats in the same order and the same engine calls around them.
+  - Vita3K, `PROC_ANIM_VERIFY`, against the engine's own function from the same state: about 22,000 calls, 0 base-UV differences. 78 differed only in the final seed, which the AI worker's own rand calls explain. Against a transcription with the engine's rand and `%`, the output UVs match bit for bit.
+  - Hardware, battle, alternating 10 s windows: 2.9–3.2 against 6.2–7.0 ms a frame (49–55 meshes, 7,300–8,200 vertices). What remains is the work around the arithmetic: the calls that lock and unlock the meshes' output buffers, and copying the results into the model's vertex buffer.
+- **Emitter sort, tried and dropped:** keeping `EmitterOrderCmp`'s camera distances per emitter gave the engine's answers in every comparison (Vita3K). On hardware it saved about 30 ns of the ~1.1 µs a timed comparison took (most of that is the timer itself), so about 0.1 ms a frame.
+- **Particles:** in the battle they cost almost nothing to move. Their ~6% is collision: `ExplosionEmitter::Update` → `moveParticleStandard` → `Scene::HitCheck` for each particle, each frame. Cutting it would change how debris bounces.
 - **Battle profile, AI worker:** scripts. RunScript 58%, the NWScript interpreter loop (ExecuteCode) 20% self, CSWSCreature::EventHandler 48%, ExecuteScript 45%.
 
 ## 6. Room and visibility experiments

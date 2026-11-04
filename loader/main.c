@@ -47,6 +47,7 @@
 #include "menu_cache.h"
 #include "leaf_fast.h"
 #include "plt_direct.h"
+#include "proc_anim.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -4954,6 +4955,7 @@ int main(int argc, char *argv[]) {
   script_cache_install();
   menu_cache_install();
   leaf_fast_install();
+  proc_anim_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
 #else
