@@ -532,7 +532,16 @@ libkotor2 is already ARMv7 code: Android NDK clang 9, Thumb-2, VFPv3 with NEON, 
   - the AI ran 29.0 ms before its first stop, against 3.9 ms;
   - the game thread waited 14.1 against 42.5 ms after drawing;
   - fitted over all 27 windows against draws per frame: −11 ms a frame (residual sd 19 ms). At 550 draws that is about 121 against 132 ms.
-- **What remains:** the frame is about 12.7 ms plus 0.22 ms per draw. The next first stops are `GetClientRangedAnimation`, `GetClientMeleeAnimation`, `SetCombatMessage` and `AddFloatyText` (`AI_GATE_CENSUS`).
+- **Second round:** `CGuiInGame::SetCombatMessage` (from the attack and the walk update; the last wins) and `AddFloatyText` (from `OnApplyDamage`; every damage number kept) are queued too.
+  - Hardware A/B in the unprofiled windows: about −5 ms a frame (±6 ms); the game thread waited 12.7 against 17.2 ms.
+  - `GetClientMeleeAnimation` and `GetClientRangedAnimation` still wait. They write the client creature's attack data (`UpdateMeleeAttackData`, +0x400) while the drawing animates it.
+- **Battle profile, game thread** (PC_PROF_CYCLE, 16 s of windows, 2026-11-04; percentages of the thread's running time, lower bounds where frame chains break):
+  - Scene::Render 31%; Gob::Animate 22%, with ProceduralAnimateHierarchy 7.4% (rand() % n per vertex);
+  - ManageSceneBSP 21%, of which BSPTraverseVolumeApprox 16%;
+  - particles about 20% (DoEmitterBucket 8%, AnimateParticles 6.8%, ExplosionEmitter::Update 6.1%, PartOutside 4.3%, EmitterOrderCmp 3.2%);
+  - client AI (CClientAIMaster::UpdateState) 15%; Scene::HitCheck 10.5%;
+  - server-to-client updates 5.5% plus their handling 5.4%; PopulateMenus 5.6%.
+- **Battle profile, AI worker:** scripts. RunScript 58%, the NWScript interpreter loop (ExecuteCode) 20% self, CSWSCreature::EventHandler 48%, ExecuteScript 45%.
 
 ## 6. Room and visibility experiments
 

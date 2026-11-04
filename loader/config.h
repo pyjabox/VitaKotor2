@@ -866,6 +866,9 @@
 #ifndef AI_GATES_AB
 #define AI_GATES_AB               0
 #endif
+#ifndef AI_GATES_AB_PERIOD
+#define AI_GATES_AB_PERIOD        1               /* 2 beside PC_PROF_CYCLE: its unsampled windows alternate */
+#endif
 // Test builds: the gated calls the AI worker makes after its pass first
 // stopped, by function and caller ([aithread] lines): where it would stop next.
 #ifndef AI_GATE_CENSUS

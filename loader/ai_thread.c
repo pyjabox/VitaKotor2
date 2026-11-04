@@ -151,15 +151,24 @@ static uint32_t s_help_ref[4];
  * 2026-10-16: the first gate in 168 of 169 passes while the party followed)
  * its result is unused, and the last call per creature is the one that
  * counts, so the queue keeps one per creature. */
-static const struct { const char *gate; const char *caller; } k_defer[] = {
-  { "_ZN12CSWCCreature6LookAtEmf", "_ZN12CSWSCreature41WalkUpdateLocation_QuickWalk_FollowLeaderEv" },
+/* by_object: a call replaces the queued one with the same first argument (the
+ * last per creature counts); 0: every call is kept. */
+static const struct { const char *gate; const char *caller; int by_object; } k_defer[] = {
+  { "_ZN12CSWCCreature6LookAtEmf", "_ZN12CSWSCreature41WalkUpdateLocation_QuickWalk_FollowLeaderEv", 1 },
   /* The Khoonda battle's other first stops (hardware, 2026-11-04). Each result
    * is unused, and the last call per creature is the one that counts: the
    * client creature's combat state, the facing lock SetFacing clears, the
    * camera reset after a walk step. */
-  { "_ZN12CSWCCreature14SetCombatStateEi", "_ZN12CSWSCreature14SetCombatStateEihi" },
-  { "_ZN12CSWCCreature26SetLockOrientationToObjectEmi", "_ZN25CSWVirtualMachineCommands23ExecuteCommandSetFacingEii" },
-  { "_ZN12CSWCCreature19ResetCameraToFollowEv", "_ZN12CSWSCreature28WalkUpdateLocation_QuickWalkEi" },
+  { "_ZN12CSWCCreature14SetCombatStateEi", "_ZN12CSWSCreature14SetCombatStateEihi", 1 },
+  { "_ZN12CSWCCreature26SetLockOrientationToObjectEmi", "_ZN25CSWVirtualMachineCommands23ExecuteCommandSetFacingEii", 1 },
+  { "_ZN12CSWCCreature19ResetCameraToFollowEv", "_ZN12CSWSCreature28WalkUpdateLocation_QuickWalkEi", 1 },
+  /* Next in the battle with those gone (hardware, 2026-11-04). The combat
+   * message line shows one message: the last wins (CSWPartyMemberData::
+   * SetCombatMessage stores it, then tail-calls the GUI's, so the caller is
+   * the attack). Damage numbers over the creatures: every one is kept. */
+  { "_ZN10CGuiInGame16SetCombatMessageEm", "_ZN12CSWSCreature23AIActionPhysicalAttacksEP20CSWSObjectActionNode", 1 },
+  { "_ZN10CGuiInGame16SetCombatMessageEm", "_ZN12CSWSCreature26WalkUpdateLocationDistanceEfP6VectorS1_P13CExoArrayListImE", 1 },
+  { "_ZN13CClientExoApp13AddFloatyTextEmhi", "_ZN21CSWSEffectListHandler13OnApplyDamageEP10CSWSObjectP11CGameEffecti", 0 },
 };
 #define NDEFER 8
 #define NQUEUE 64
@@ -181,13 +190,14 @@ static uint64_t (*s_timer)(void *timers);
 static uintptr_t s_upd_lo, s_upd_hi;   /* UpdateState's code */
 static struct { int def; uintptr_t lo, hi; int newer; } s_free[NFREE];
 static int s_nfree;
-static struct { int def; uintptr_t lo, hi; int newer; } s_defer[NDEFER];
-/* AI_GATES_AB (test builds): the 2026-11-04 battle rules (marked newer, the
- * free gates and the help strrefs) on and off alternately every 10 s. */
+static struct { int def; uintptr_t lo, hi; int newer, by_object; } s_defer[NDEFER];
+/* AI_GATES_AB (test builds): the rules for these callers (the latest round)
+ * on and off, AI_GATES_AB_PERIOD 10 s windows each. */
 static int s_newer_off;
 static const char *const k_newer[] = {
-  "_ZN12CSWSCreature14SetCombatStateEihi", "_ZN12CSWSCreature22GetPauseReadyAnimationEv",
-  "_ZN25CSWVirtualMachineCommands23ExecuteCommandSetFacingEii", "_ZN12CSWSCreature28WalkUpdateLocation_QuickWalkEi",
+  "_ZN12CSWSCreature23AIActionPhysicalAttacksEP20CSWSObjectActionNode",
+  "_ZN12CSWSCreature26WalkUpdateLocationDistanceEfP6VectorS1_P13CExoArrayListImE",
+  "_ZN21CSWSEffectListHandler13OnApplyDamageEP10CSWSObjectP11CGameEffecti",
 };
 static int is_newer(const char *caller) {
   for (unsigned i = 0; i < sizeof k_newer / sizeof k_newer[0]; i++) if (!strcmp(caller, k_newer[i])) return 1;
@@ -270,8 +280,8 @@ static void flush_deferred(void) {
   s_flushing = 0;
 }
 
-static int defer_call(unsigned stub, const uint32_t *args) {
-  for (int i = 0; i < s_nq; i++)
+static int defer_call(unsigned stub, const uint32_t *args, int by_object) {
+  for (int i = 0; i < s_nq && by_object; i++)
     if (s_q[i].stub == stub && s_q[i].a0 == args[0]) {   /* same function, same object: last wins */
       s_q[i].a1 = args[1]; s_q[i].a2 = args[2]; s_q[i].a3 = args[3];
       w_deferred++;
@@ -288,16 +298,19 @@ static int defer_call(unsigned stub, const uint32_t *args) {
 /* A gated call from the worker while the scene is drawn: goes on, is queued
  * for after the drawing, or waits for the drawing to end. */
 enum { GD_FREE, GD_DEFER, GD_WAIT };
-static int gate_decision(int def, uintptr_t ret, const uint32_t *args) {
+static int gate_decision(int def, uintptr_t ret, const uint32_t *args, int *by_object) {
   int nw = !s_newer_off;
-  if (nw && s_free_any[def]) return GD_FREE;
-  if (nw && def == s_help_def && args[1] != s_help_ref[0] && args[1] != s_help_ref[1] &&
-      args[1] != s_help_ref[2] && args[1] != s_help_ref[3])
+  if (s_free_any[def]) return GD_FREE;
+  if (def == s_help_def && args[1] != s_help_ref[0] && args[1] != s_help_ref[1] && args[1] != s_help_ref[2] &&
+      args[1] != s_help_ref[3])
     return GD_FREE;
   for (int i = s_free_at[def], e = i + s_free_n[def]; i < e; i++)
     if (ret >= s_free[i].lo && ret < s_free[i].hi && (nw || !s_free[i].newer)) return GD_FREE;
   for (int i = s_defer_at[def], e = i + s_defer_n[def]; i < e; i++)
-    if (ret >= s_defer[i].lo && ret < s_defer[i].hi && (nw || !s_defer[i].newer)) return GD_DEFER;
+    if (ret >= s_defer[i].lo && ret < s_defer[i].hi && (nw || !s_defer[i].newer)) {
+      if (by_object) *by_object = s_defer[i].by_object;
+      return GD_DEFER;
+    }
   return GD_WAIT;
 }
 
@@ -611,7 +624,7 @@ uintptr_t ai_gate_enter(unsigned stub, uintptr_t ret, const uint32_t *args) {
   }
   if (!s_window) {
 #if AI_GATE_CENSUS
-    if ((fl & G_WAIT) && on_worker() && gate_decision(def, ret, args) == GD_WAIT) census_note(def, ret);
+    if ((fl & G_WAIT) && on_worker() && gate_decision(def, ret, args, NULL) == GD_WAIT) census_note(def, ret);
 #endif
     if (s_nq && (fl & G_WAIT) && on_worker()) flush_deferred();   /* before this call */
   } else {
@@ -620,8 +633,9 @@ uintptr_t ai_gate_enter(unsigned stub, uintptr_t ret, const uint32_t *args) {
 #if AI_THREAD_DIAG
         d_gate_passes++;
 #endif
-        int d = gate_decision(def, ret, args);
-        if (d == GD_DEFER && defer_call(stub, args)) return (uintptr_t)&ai_gate_ret0;
+        int by_object = 1;
+        int d = gate_decision(def, ret, args, &by_object);
+        if (d == GD_DEFER && defer_call(stub, args, by_object)) return (uintptr_t)&ai_gate_ret0;
         if (d != GD_FREE) worker_wait(def, ret);
       }
     } else if (fl & G_JOIN) {
@@ -853,8 +867,11 @@ static void log_window(uint64_t now) {
   }
 #endif
 #if AI_GATES_AB
-  log_printf("[aithread] battle gate rules were %s in this window", s_newer_off ? "OFF" : "ON");
-  s_newer_off = !s_newer_off;
+  {
+    static unsigned s_ab_windows;
+    log_printf("[aithread] battle gate rules were %s in this window", s_newer_off ? "OFF" : "ON");
+    if (++s_ab_windows % AI_GATES_AB_PERIOD == 0) s_newer_off = !s_newer_off;
+  }
 #endif
   if (w_deferred)
     log_printf("[aithread] deferred %u calls during the drawing, made %u after it", (unsigned)w_deferred,
@@ -1102,6 +1119,7 @@ void ai_thread_install(void) {
     s_defer[s_ndefer].lo = lo;
     s_defer[s_ndefer].hi = hi;
     s_defer[s_ndefer].newer = is_newer(k_defer[f].caller);
+    s_defer[s_ndefer].by_object = k_defer[f].by_object;
     s_ndefer++;
   }
 
