@@ -522,6 +522,17 @@ libkotor2 is already ARMv7 code: Android NDK clang 9, Thumb-2, VFPv3 with NEON, 
 - **`_stricmp`:** ASCII folded inline. 90 against 293 ns, with all 256 answers identical.
 - **`tolower`, `toupper`, `fminf`, `fmaxf`:** the engine's imports, answered without newlib's call for ASCII and numbers.
 - **Call counts in the battle:** `_stricmp` 2,000–15,000 times a frame, with peaks of 43,000; slerp 500–2,500. That puts the saving at roughly 0.5–3 ms a frame, estimated from the counts and timings rather than A/B-tested.
+- **Who calls `_stricmp`** (`LEAF_FAST_TRACE`, Vita3K Telos): `FindAnimation` about 60%, `Gob::DoEvent` about 20%, `C2DA::GetColumnIndex` about 17%, `FindPart` about 3%. All four are linear name searches.
+
+**The AI thread in battles** (`loader/ai_thread.c`). In the Khoonda battle the AI pass stopped after 2–6 ms of its 29–73 ms and waited for the drawing to end, so the game thread then waited 26–39 ms for it. In the heaviest phase, 95% of those first stops were five calls, all now handled without waiting:
+- **Run immediately:** `GetClientCreature` from `CSWSCreature::SetCombatState` and `GetPauseReadyAnimation` (only a lookup); `CSWCCreature::GetPauseReadyAnimation` from anywhere (it only reads).
+- **Run immediately unless needed:** `ShowHelpForString` acts on four strrefs and returns at once for any other, and `CTlkTable::Fetch` calls it for every string. Calls with the four still wait.
+- **Queued until the drawing ends:** the client's `SetCombatState`, `SetLockOrientationToObject` from `SetFacing`, and `ResetCameraToFollow` from the walk update. Each result is unused, and the last call per creature wins.
+- **Hardware, alternating 10 s windows (`AI_GATES_AB`), battle windows at 400 draws or more:**
+  - the AI ran 29.0 ms before its first stop, against 3.9 ms;
+  - the game thread waited 14.1 against 42.5 ms after drawing;
+  - fitted over all 27 windows against draws per frame: −11 ms a frame (residual sd 19 ms). At 550 draws that is about 121 against 132 ms.
+- **What remains:** the frame is about 12.7 ms plus 0.22 ms per draw. The next first stops are `GetClientRangedAnimation`, `GetClientMeleeAnimation`, `SetCombatMessage` and `AddFloatyText` (`AI_GATE_CENSUS`).
 
 ## 6. Room and visibility experiments
 

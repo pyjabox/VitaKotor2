@@ -861,6 +861,16 @@
 // Test builds: why each AI level ends (budget, due event, list wrapped), its
 // clock, CPU and wall time, and the events dispatched, per 10 s window, for the
 // AI in the server loop and beside the drawing ([aithread] diag lines).
+// Test builds: ai_thread.c's battle gate rules (2026-11-04) on and off
+// alternately every 10 s.
+#ifndef AI_GATES_AB
+#define AI_GATES_AB               0
+#endif
+// Test builds: the gated calls the AI worker makes after its pass first
+// stopped, by function and caller ([aithread] lines): where it would stop next.
+#ifndef AI_GATE_CENSUS
+#define AI_GATE_CENSUS            0
+#endif
 #ifndef AI_THREAD_DIAG
 #define AI_THREAD_DIAG            0
 #endif

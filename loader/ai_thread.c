@@ -110,12 +110,39 @@ static const struct { const char *gate; const char *callers[NCALLERS]; } k_free_
       "_ZN12CSWSCreature21IsProjectileParryableEP10CSWSObjectiiRiS2_i",
       "_ZN21CSWSEffectListHandler18OnApplyForceShieldEP10CSWSObjectP11CGameEffecti",
       "_ZN25CSWVirtualMachineCommands23ExecuteCommandIsRunningEii",
-      "_ZN12CSWSCreature12SetAnimationEi", NULL } },
+      "_ZN12CSWSCreature12SetAnimationEi",
+      /* The Khoonda battle (hardware, 2026-11-04: with the next two, 95% of
+       * the passes' first stops in its heaviest phase; the AI then ran 2-6 ms
+       * of its 29-73 before waiting out the drawing). SetCombatState checks
+       * the client creature exists, then hands it to SetCombatState, deferred
+       * below; GetPauseReadyAnimation tail-calls the client's, which only
+       * reads (free from anywhere, k_free_any). */
+      "_ZN12CSWSCreature14SetCombatStateEihi",
+      "_ZN12CSWSCreature22GetPauseReadyAnimationEv", NULL } },
   { "_ZN10CSWSObject15GetClientObjectEv", {
       "_ZN12CSWSCreature17GetClientCreatureEv",
       "_ZN10CSWSObject21AIActionPlayAnimationEP20CSWSObjectActionNode", NULL } },
 };
 #define NFREE 16
+
+/* Gates that never wait: client functions that only read -- no store, and
+ * nothing but lookups called (disassembly of libkotor2 2.0.4).
+ * CSWCCreature::GetPauseReadyAnimation reads the creature, IsInjured, the
+ * client options and the party; the server's tail-calls it, so its return
+ * address is the server caller's, whoever that is. */
+static const char *const k_free_any[] = {
+  "_ZN12CSWCCreature22GetPauseReadyAnimationEv",
+};
+static uint8_t s_free_any[NDEFS];
+
+/* CSWGuiMainInterface::ShowHelpForString(strref) acts on four strrefs and
+ * returns at once for any other. CTlkTable::Fetch calls it for every string
+ * the server fetches -- combat feedback, in a battle (hardware, 2026-11-04:
+ * 26% of the first stops). Those calls go on; the four still wait. */
+#define HELP_SYM "_ZN19CSWGuiMainInterface17ShowHelpForStringEi"
+#define HELP_FN  0x347b4cu
+static int s_help_def = -1;
+static uint32_t s_help_ref[4];
 
 /* Calls the worker queues instead of waiting for, while the scene is drawn,
  * and makes itself once the drawing has ended: before its next gated call, or
@@ -126,8 +153,15 @@ static const struct { const char *gate; const char *callers[NCALLERS]; } k_free_
  * counts, so the queue keeps one per creature. */
 static const struct { const char *gate; const char *caller; } k_defer[] = {
   { "_ZN12CSWCCreature6LookAtEmf", "_ZN12CSWSCreature41WalkUpdateLocation_QuickWalk_FollowLeaderEv" },
+  /* The Khoonda battle's other first stops (hardware, 2026-11-04). Each result
+   * is unused, and the last call per creature is the one that counts: the
+   * client creature's combat state, the facing lock SetFacing clears, the
+   * camera reset after a walk step. */
+  { "_ZN12CSWCCreature14SetCombatStateEi", "_ZN12CSWSCreature14SetCombatStateEihi" },
+  { "_ZN12CSWCCreature26SetLockOrientationToObjectEmi", "_ZN25CSWVirtualMachineCommands23ExecuteCommandSetFacingEii" },
+  { "_ZN12CSWCCreature19ResetCameraToFollowEv", "_ZN12CSWSCreature28WalkUpdateLocation_QuickWalkEi" },
 };
-#define NDEFER 4
+#define NDEFER 8
 #define NQUEUE 64
 
 enum { M_OFF, M_THREAD, M_INLINE };
@@ -145,9 +179,20 @@ static void (*s_update)(void *master);
 static void (*s_render)(void *scene);
 static uint64_t (*s_timer)(void *timers);
 static uintptr_t s_upd_lo, s_upd_hi;   /* UpdateState's code */
-static struct { int def; uintptr_t lo, hi; } s_free[NFREE];
+static struct { int def; uintptr_t lo, hi; int newer; } s_free[NFREE];
 static int s_nfree;
-static struct { int def; uintptr_t lo, hi; } s_defer[NDEFER];
+static struct { int def; uintptr_t lo, hi; int newer; } s_defer[NDEFER];
+/* AI_GATES_AB (test builds): the 2026-11-04 battle rules (marked newer, the
+ * free gates and the help strrefs) on and off alternately every 10 s. */
+static int s_newer_off;
+static const char *const k_newer[] = {
+  "_ZN12CSWSCreature14SetCombatStateEihi", "_ZN12CSWSCreature22GetPauseReadyAnimationEv",
+  "_ZN25CSWVirtualMachineCommands23ExecuteCommandSetFacingEii", "_ZN12CSWSCreature28WalkUpdateLocation_QuickWalkEi",
+};
+static int is_newer(const char *caller) {
+  for (unsigned i = 0; i < sizeof k_newer / sizeof k_newer[0]; i++) if (!strcmp(caller, k_newer[i])) return 1;
+  return 0;
+}
 static int s_ndefer;
 /* Per gate, where its entries start in s_free / s_defer and how many: a gate
  * with none (all but two) decides without scanning. */
@@ -239,6 +284,38 @@ static int defer_call(unsigned stub, const uint32_t *args) {
   w_deferred++;
   return 1;
 }
+
+/* A gated call from the worker while the scene is drawn: goes on, is queued
+ * for after the drawing, or waits for the drawing to end. */
+enum { GD_FREE, GD_DEFER, GD_WAIT };
+static int gate_decision(int def, uintptr_t ret, const uint32_t *args) {
+  int nw = !s_newer_off;
+  if (nw && s_free_any[def]) return GD_FREE;
+  if (nw && def == s_help_def && args[1] != s_help_ref[0] && args[1] != s_help_ref[1] &&
+      args[1] != s_help_ref[2] && args[1] != s_help_ref[3])
+    return GD_FREE;
+  for (int i = s_free_at[def], e = i + s_free_n[def]; i < e; i++)
+    if (ret >= s_free[i].lo && ret < s_free[i].hi && (nw || !s_free[i].newer)) return GD_FREE;
+  for (int i = s_defer_at[def], e = i + s_defer_n[def]; i < e; i++)
+    if (ret >= s_defer[i].lo && ret < s_defer[i].hi && (nw || !s_defer[i].newer)) return GD_DEFER;
+  return GD_WAIT;
+}
+
+#if AI_GATE_CENSUS
+/* Test builds: the gated calls the worker makes after its pass has stopped
+ * once (the drawing over), by function and caller: where it would stop next. */
+#define NCENSUS 128
+static struct { uint16_t def; uintptr_t ret; uint32_t n; } s_census[NCENSUS];
+static uint32_t s_census_lost;
+static void census_note(int def, uintptr_t ret) {
+  uint32_t h = ((uint32_t)ret * 2654435761u) >> 25;
+  for (int i = 0; i < 8; i++, h = (h + 1) & (NCENSUS - 1)) {
+    if (s_census[h].n && s_census[h].ret == ret && s_census[h].def == def) { s_census[h].n++; return; }
+    if (!s_census[h].n) { s_census[h].def = (uint16_t)def; s_census[h].ret = ret; s_census[h].n = 1; return; }
+  }
+  s_census_lost++;
+}
+#endif
 
 static void worker_wait(int def, uintptr_t ret) {
   uint64_t t = now_us();
@@ -533,6 +610,9 @@ uintptr_t ai_gate_enter(unsigned stub, uintptr_t ret, const uint32_t *args) {
     w_epoch_hits[def]++;
   }
   if (!s_window) {
+#if AI_GATE_CENSUS
+    if ((fl & G_WAIT) && on_worker() && gate_decision(def, ret, args) == GD_WAIT) census_note(def, ret);
+#endif
     if (s_nq && (fl & G_WAIT) && on_worker()) flush_deferred();   /* before this call */
   } else {
     if (on_worker()) {
@@ -540,15 +620,9 @@ uintptr_t ai_gate_enter(unsigned stub, uintptr_t ret, const uint32_t *args) {
 #if AI_THREAD_DIAG
         d_gate_passes++;
 #endif
-        int free = 0;
-        for (int i = s_free_at[def], e = i + s_free_n[def]; i < e && !free; i++)
-          free = ret >= s_free[i].lo && ret < s_free[i].hi;
-        if (!free) {
-          for (int i = s_defer_at[def], e = i + s_defer_n[def]; i < e; i++)
-            if (ret >= s_defer[i].lo && ret < s_defer[i].hi && defer_call(stub, args))
-              return (uintptr_t)&ai_gate_ret0;
-          worker_wait(def, ret);
-        }
+        int d = gate_decision(def, ret, args);
+        if (d == GD_DEFER && defer_call(stub, args)) return (uintptr_t)&ai_gate_ret0;
+        if (d != GD_FREE) worker_wait(def, ret);
       }
     } else if (fl & G_JOIN) {
       /* The drawing needs the server: let the AI finish first. */
@@ -759,6 +833,29 @@ static void log_window(uint64_t now) {
     if (n) log_printf("[aithread] stopped from:%s", sites);
     memset(w_sites, 0, sizeof w_sites);
   }
+#if AI_GATE_CENSUS
+  {
+    char out[400];
+    int n = 0;
+    out[0] = 0;
+    for (int k = 0; k < 10 && n < (int)sizeof out - 60; k++) {
+      int best = -1;
+      for (int i = 0; i < NCENSUS; i++)
+        if (s_census[i].n && (best < 0 || s_census[i].n > s_census[best].n)) best = i;
+      if (best < 0) break;
+      n += snprintf(out + n, sizeof out - (size_t)n, " %s<-%x:%u", k_ai_gates[s_census[best].def].name,
+                    (unsigned)((s_census[best].ret & ~(uintptr_t)1) - kotor_mod.text_base), (unsigned)s_census[best].n);
+      s_census[best].n = 0;
+    }
+    if (n) log_printf("[aithread] gated calls after the first stop:%s%s", out, s_census_lost ? " (table full)" : "");
+    memset(s_census, 0, sizeof s_census);
+    s_census_lost = 0;
+  }
+#endif
+#if AI_GATES_AB
+  log_printf("[aithread] battle gate rules were %s in this window", s_newer_off ? "OFF" : "ON");
+  s_newer_off = !s_newer_off;
+#endif
   if (w_deferred)
     log_printf("[aithread] deferred %u calls during the drawing, made %u after it", (unsigned)w_deferred,
                (unsigned)w_flushed);
@@ -966,7 +1063,30 @@ void ai_thread_install(void) {
       s_free[s_nfree].def = def;
       s_free[s_nfree].lo = lo;
       s_free[s_nfree].hi = hi;
+      s_free[s_nfree].newer = is_newer(k_free_from[f].callers[c]);
       s_nfree++;
+    }
+  }
+  for (unsigned f = 0; f < sizeof k_free_any / sizeof k_free_any[0]; f++) {
+    int def = lookup(k_free_any[f]);
+    if (def >= 0) s_free_any[def] = 1;
+    else log_printf("[aithread] free gate %s not found", k_free_any[f]);
+  }
+  {
+    /* ShowHelpForString's four strrefs: movw r0, #0xbe5c, then three from its
+     * literal pool. Anything unexpected: every call waits, as before. */
+    int def = lookup(HELP_SYM);
+    const uint16_t *c = (const uint16_t *)(kotor_mod.text_base + HELP_FN);
+    uintptr_t fn = so_symbol(&kotor_mod, HELP_SYM);
+    if (def >= 0 && fn == kotor_mod.text_base + HELP_FN + 1 && c[2] == 0xf64b && c[3] == 0x605c) {
+      const uint32_t *lit = (const uint32_t *)(kotor_mod.text_base + 0x347bacu);
+      s_help_ref[0] = 0xbe5c;
+      s_help_ref[1] = lit[0];
+      s_help_ref[2] = lit[1];
+      s_help_ref[3] = lit[2];
+      s_help_def = def;
+    } else {
+      log_printf("[aithread] ShowHelpForString not as expected: all its calls wait");
     }
   }
   for (unsigned f = 0; f < sizeof k_defer / sizeof k_defer[0] && s_ndefer < NDEFER; f++) {
@@ -981,6 +1101,7 @@ void ai_thread_install(void) {
     s_defer[s_ndefer].def = def;
     s_defer[s_ndefer].lo = lo;
     s_defer[s_ndefer].hi = hi;
+    s_defer[s_ndefer].newer = is_newer(k_defer[f].caller);
     s_ndefer++;
   }
 
