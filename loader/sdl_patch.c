@@ -42,6 +42,9 @@
 #include "path_cache.h"
 #include "mine_trace.h"
 #include "script_cache.h"
+#include "menu_cache.h"
+#include "leaf_fast.h"
+#include "plt_direct.h"
 #include "cansee_cache.h"
 #include "gl_state_filter.h"
 #include "so_util.h"
@@ -103,6 +106,9 @@ static void SDL_GL_SwapWindow_hook(SDL_Window *w) {
   path_cache_on_swap();
   mine_trace_on_swap();
   script_cache_on_swap();
+  menu_cache_on_swap();
+  leaf_fast_on_swap();
+  plt_direct_on_swap();
   cansee_cache_on_swap();
 #if PC_PROF
   pc_prof_on_swap();

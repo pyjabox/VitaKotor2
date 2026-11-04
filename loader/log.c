@@ -118,7 +118,7 @@ static const char *const k_log_keep[] = {
   "fail", "FAIL", "error", "ERROR", "Error", "WARNING", "warning",
   "MISSING", "missing", "abort", "ABORT", "CRASH", "unresolved",
   "[DRAW_FRAME]", "[cull]", "[ailist]", "[cansee]", "[bloom]", "[ramfile]", "[glsf]", "[effects-low]", "[ini]", "[stall]", "[dxt]", "[music]", "[mipgen]", "[obbidx]", "[aibudget]", "[aithrottle]", "[aithread]", "[aslprobe]", "[aslw]", "[offload]", "[scene]", "[path]", "[autotest]", "[glw]", "[glw:prof]", "[pcprof]", "[roomab]", "[roomdist]", "[loadscreen]", "[gxmp]", "[touch]", "[events]", "[vsync]", "[vsync-ab]",
-  "[lang]", "[mods]", "[bootmenu]", "[fbattach]", "[cubeup]", "[glbuf]", "[snd-gap]", "[snd-phase]", "[snd-cap]", "[cpu]", "[thread]", "[fd]", "[mine]", "[script]", "[resolve]",
+  "[lang]", "[mods]", "[bootmenu]", "[fbattach]", "[cubeup]", "[glbuf]", "[snd-gap]", "[snd-phase]", "[snd-cap]", "[cpu]", "[thread]", "[fd]", "[mine]", "[script]", "[resolve]", "[plt]", "[menu]", "[leaf]",
 };
 
 static int log_suppressed(const char *fmt) {
@@ -211,6 +211,18 @@ void log_init(void) {
   sceIoMkdir("ux0:data", 0777);
   sceIoMkdir(DATA_PATH, 0777);
 
+#if LOG_KEEP_PREVIOUS > 0
+  // Test builds: the last launches' logs as log-prev1.txt (newest) ... so a
+  // session of several launches can be read at the end.
+  for (int i = LOG_KEEP_PREVIOUS; i >= 1; i--) {
+    char from[64], to[64];
+    if (i == 1) snprintf(from, sizeof from, "%s", LOG_PATH);
+    else snprintf(from, sizeof from, DATA_PATH "/log-prev%d.txt", i - 1);
+    snprintf(to, sizeof to, DATA_PATH "/log-prev%d.txt", i);
+    sceIoRemove(to);
+    sceIoRename(from, to);
+  }
+#endif
   // Truncate the log at startup.
   SceUID fd = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
   if (fd >= 0)

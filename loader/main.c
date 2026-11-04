@@ -44,6 +44,9 @@
 #include "voice_close.h"
 #include "mine_trace.h"
 #include "script_cache.h"
+#include "menu_cache.h"
+#include "leaf_fast.h"
+#include "plt_direct.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -4721,6 +4724,9 @@ static void *game_main_thread(void *arg) {
   bootmenu_run();
   modstack_build(lang_tag(), lang_engine_folder(), lang_translation_dir());
   locstr_fallback_install(lang_engine_id());
+  /* Last: the hooks above are all in place; calls to functions none of them
+   * took become direct (plt_direct.c). No engine code runs on another thread yet. */
+  plt_direct_install();
 
   /* The game's own loading screen until its first GL call; warm when the
    * archive replay index is there (obb_index.c). */
@@ -4784,6 +4790,7 @@ int main(int argc, char *argv[]) {
   report_unresolved(&cxx_mod, "libc++_shared.so");
   report_unresolved(&port_mod, "libObbVfs.so");
   report_unresolved(&kotor_mod, "libkotor2.so");
+  plt_direct_scan();            /* before any hook writes into the engine's code */
 
   // Now that both module bases are known, arm the CPU-fault handler so any
   // hardware fault (incl. during static ctors below or inside the game) writes
@@ -4945,6 +4952,8 @@ int main(int argc, char *argv[]) {
   check_engine_forwarders();
   mine_trace_install();
   script_cache_install();
+  menu_cache_install();
+  leaf_fast_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
 #else

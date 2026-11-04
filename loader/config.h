@@ -802,6 +802,56 @@
 #ifndef SCRIPT_CACHE_KB
 #define SCRIPT_CACHE_KB           4096
 #endif
+// Test builds: keep the last N launches' logs as log-prev1.txt (newest) ...
+#ifndef LOG_KEEP_PREVIOUS
+#define LOG_KEEP_PREVIOUS         0
+#endif
+// The engine's calls to its own functions made direct at boot, past the PLT
+// stub and Thumb-to-ARM veneer (loader/plt_direct.c); calls to hooked functions
+// stay on their slot. ux0:data/kotor2/plt_mode.txt: 0 off, 1 on, a on and off
+// on alternate launches. Hardware: Telos 62.2 against 67.8 ms frames, battle
+// windows 7-11% shorter; 0.3-0.4 s more boot.
+#ifndef PLT_DIRECT
+#define PLT_DIRECT                1
+#endif
+#ifndef PLT_DIRECT_DEFAULT
+#define PLT_DIRECT_DEFAULT        '1'
+#endif
+// Test builds: time a call through a PLT stub and a direct one at boot.
+#ifndef PLT_DIRECT_BENCH
+#define PLT_DIRECT_BENCH          0
+#endif
+// The action menus' per-frame rebuild skipped while nothing it shows changed,
+// at most MENU_CACHE_MS (loader/menu_cache.c); 13% of the game thread in the
+// Khoonda battle. ux0:data/kotor2/menu_mode.txt: 0 off, 1 on, a on and off
+// every 10 s; digits after the letter: the interval in ms. Hardware, Khoonda
+// battle: 1.6 against 4.2 ms a frame. (The profile's 13% overstated it.)
+#ifndef MENU_CACHE
+#define MENU_CACHE                1
+#endif
+#ifndef MENU_CACHE_DEFAULT
+#define MENU_CACHE_DEFAULT        '1'
+#endif
+#ifndef MENU_CACHE_MS
+#define MENU_CACHE_MS             200
+#endif
+// slerp, _stricmp, tolower/toupper, fminf/fmaxf answered by faster versions
+// (loader/leaf_fast.c). ux0:data/kotor2/leaf_mode.txt: 0 off, 1 on, a on and
+// off every 10 s.
+#ifndef LEAF_FAST
+#define LEAF_FAST                 1
+#endif
+#ifndef LEAF_FAST_DEFAULT
+#define LEAF_FAST_DEFAULT         '1'
+#endif
+// Test builds: both versions timed and compared at boot.
+#ifndef LEAF_FAST_BENCH
+#define LEAF_FAST_BENCH           0
+#endif
+// Test builds: _stricmp's callers counted, the top ten logged every 10 s.
+#ifndef LEAF_FAST_TRACE
+#define LEAF_FAST_TRACE           0
+#endif
 // Test builds: count the engine's calls into ASLgl, its queries, client-memory
 // draws, draw and shader-setup times, and a recorder micro-benchmark, per 10 s
 // window ([aslprobe] lines; loader/asl_probe.c).

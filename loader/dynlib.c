@@ -53,6 +53,7 @@
 #include "audio_patch.h"
 #include "sdl_patch.h"
 #include "gl_patch.h"
+#include "leaf_fast.h"
 
 // ---- generic stubs (category b) ------------------------------------------
 int ret0(void) { return 0; }
@@ -1256,7 +1257,11 @@ so_default_dynlib default_dynlib[] = {
   { "isspace", (uintptr_t)&isspace }, { "isupper", (uintptr_t)&isupper }, { "islower", (uintptr_t)&islower },
   { "isprint", (uintptr_t)&isprint }, { "ispunct", (uintptr_t)&ispunct }, { "iscntrl", (uintptr_t)&iscntrl },
   { "isgraph", (uintptr_t)&isgraph }, { "isxdigit", (uintptr_t)&isxdigit }, { "isblank", (uintptr_t)&isblank },
+#if LEAF_FAST
+  { "toupper", (uintptr_t)&leaf_toupper }, { "tolower", (uintptr_t)&leaf_tolower },   /* leaf_fast.c */
+#else
   { "toupper", (uintptr_t)&toupper }, { "tolower", (uintptr_t)&tolower },
+#endif
   { "wctomb", (uintptr_t)&wctomb }, { "mbrlen", (uintptr_t)&mbrlen }, { "mbtowc", (uintptr_t)&mbtowc },
 
   // ============ (a) libm ============
@@ -1270,7 +1275,11 @@ so_default_dynlib default_dynlib[] = {
   { "asinf", (uintptr_t)&sfp_asinf }, { "acosf", (uintptr_t)&sfp_acosf }, { "atanf", (uintptr_t)&sfp_atanf }, { "atan2f", (uintptr_t)&sfp_atan2f },
   { "expf", (uintptr_t)&sfp_expf }, { "logf", (uintptr_t)&sfp_logf }, { "powf", (uintptr_t)&sfp_powf }, { "sqrtf", (uintptr_t)&sfp_sqrtf },
   { "fabsf", (uintptr_t)&sfp_fabsf }, { "floorf", (uintptr_t)&sfp_floorf }, { "ceilf", (uintptr_t)&sfp_ceilf }, { "fmodf", (uintptr_t)&sfp_fmodf },
+#if LEAF_FAST
+  { "fmaxf", (uintptr_t)&leaf_fmaxf }, { "fminf", (uintptr_t)&leaf_fminf },           /* leaf_fast.c */
+#else
   { "fmaxf", (uintptr_t)&sfp_fmaxf }, { "fminf", (uintptr_t)&sfp_fminf },
+#endif
   { "ldexpf", (uintptr_t)&sfp_ldexpf },
 
   // ============ (a) time.h + pthread ============

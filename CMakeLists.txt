@@ -71,6 +71,10 @@ add_executable(KOTOR2
   loader/voice_close.c
   loader/mine_trace.c
   loader/script_cache.c
+  loader/plt_scan.c
+  loader/plt_direct.c
+  loader/menu_cache.c
+  loader/leaf_fast.c
   loader/asl_probe.c
   loader/asl_worker.c
   loader/aslw_gen.c

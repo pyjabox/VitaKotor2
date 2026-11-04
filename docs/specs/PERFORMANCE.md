@@ -496,6 +496,33 @@ vitaGL's display callback sets the new framebuffer for the next vblank, then wai
 
 **30 FPS cap, on by default** (`loader/frame_pace.c`, `FRAME_CAP_30`). The interval is 2: each frame is shown for two vblanks. Light scenes ran at 34–37 FPS, unevenly; heavy ones are below 30 anyway. The display queue then holds the GL worker, and the game behind it, at that rate: Vita3K showed 30.0 FPS in gameplay against 60.0 uncapped. `ux0:data/kotor2/fps_cap.txt` containing `0` removes the cap. `[Graphics Options]` in `swkotor2.ini` then decides: `LockFramerate=1` caps again (the game's toggle, `g_bFrameRateLocked`, is followed while playing), `V-Sync=0` turns vsync off, otherwise vsync is on.
 
+### 5.16 Engine call overhead and per-frame rebuilds
+
+libkotor2 is already ARMv7 code: Android NDK clang 9, Thumb-2, VFPv3 with NEON, softfp calls. memcpy, memmove and memclr already go to the Vita's NEON routines. What it pays is the shared-library build. Every function is exported, so 107,483 of its calls to its own functions are `blx` to a PLT stub: a switch to ARM, a GOT load and an indirect jump. Another 5,129 tail calls go `b.w` through a Thumb-to-ARM veneer to the same stubs. Only 24,302 calls are direct. One-instruction getters pay this too: `CSWRules::GetBaseItem`, for example, is a load and then two stub hops. The flat profiles (summary in `diagnostics/modernize-20261104`) show it: a third of the samples land on the entries of small functions.
+
+**Direct calls** (`loader/plt_direct.c`, `PLT_DIRECT`, on by default).
+- **When it runs:**
+  - `plt_scan` sweeps the untouched code right after the library is loaded, before any hook writes into it.
+  - Before `SDL_main`, after the last hook, each call on the list becomes `bl`/`b.w` (`blx` for libgcc's ARM functions) straight to the function. This happens only if the instruction is still the original and the function's GOT slot still holds its own address.
+- **Hooked functions:** calls to them stay on their slot, so every hook still sees them. A check every 10 s warns if a slot changes afterwards.
+- **Which sites:** `tools/plt_oracle.py` disassembles the library by following control flow from every function entry. It lists the sites the linear sweep must not touch in `plt_exclude.h`: 8,539, mostly C++ landing pads, plus 4 that overlap literals. It also records the sweep's count and hash; on another libkotor2, nothing is patched. `tools/test_plt_scan.c` checks the decoder and encoders on the real library.
+- **Hardware:**
+  - 92,870 calls and 4,746 tail calls made direct; 6,457 stay with hooked functions.
+  - Telos, same spot, at about 500 draws: 62.2 against 67.8 ms frames (−8%), the direct launch drawing 3% more.
+  - The four matched early-battle windows at Khoonda were 7–11% shorter.
+  - A warm call to `dot()`: 49 against 61 ns.
+  - Boot: the scan and the patch cost about 0.3–0.4 s.
+
+**Action menus** (`loader/menu_cache.c`, `MENU_CACHE`, on by default). `CSWGuiMainInterface::PopulateMenus` refills the seven quick-action lists from the leader's items, powers and stances. It also refills the target menu and the six buttons. Two callers run it every frame: `CSWGuiMainInterface::Draw`, and `MainLoop` through `RePopulateMainInterface`.
+- **Rule:** those two calls are skipped while the leader, the target and the selected actions are unchanged, for at most 200 ms. The game's own repopulates (combat mode, a click, a leader change) always run.
+- **Hardware, battle, alternating 10 s windows:** 1.6 against 4.2 ms a frame. Telos: 0.2 against 1.0 ms. The pc_prof figure of 13% overstated it.
+
+**Small functions** (`loader/leaf_fast.c`, `LEAF_FAST`, on by default).
+- **slerp:** the same arithmetic in the same order, with polynomial acos and sin. 507 against 934 ns a call on hardware. The largest difference over 2,048 cases is 1.8e-7.
+- **`_stricmp`:** ASCII folded inline. 90 against 293 ns, with all 256 answers identical.
+- **`tolower`, `toupper`, `fminf`, `fmaxf`:** the engine's imports, answered without newlib's call for ASCII and numbers.
+- **Call counts in the battle:** `_stricmp` 2,000–15,000 times a frame, with peaks of 43,000; slerp 500–2,500. That puts the saving at roughly 0.5–3 ms a frame, estimated from the counts and timings rather than A/B-tested.
+
 ## 6. Room and visibility experiments
 
 ### 6.1 Scoped VIS edge: successful proof
