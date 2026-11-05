@@ -10,6 +10,12 @@
 extern so_default_dynlib default_dynlib[];
 extern const int default_dynlib_size;   // in bytes, for so_resolve()
 
+// The engine's operator new[] / delete[] as its own calls reach them (the
+// big-block pool, then newlib), for loader replacements of engine functions
+// that own such blocks (gff_grow.c).
+void *k2_new_array(size_t n);
+void k2_delete_array(void *p);
+
 // Diagnostic: when nonzero, malloc/calloc/realloc/operator-new log each request.
 // Armed by gl_patch.c at init()'s final GL cap-query to trace the hang window.
 extern volatile int g_mem_trace;

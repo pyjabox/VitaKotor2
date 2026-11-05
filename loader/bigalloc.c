@@ -61,19 +61,36 @@
 /* The host build swaps the segment source for malloc so the allocator logic --
  * split, coalesce, best fit, the bounds test -- can be exercised off-device. */
 #include <stdio.h>
-static void *seg_acquire(size_t bytes) { return malloc(bytes); }
+size_t bigalloc_host_budget = (size_t)-1, bigalloc_host_used;
+static size_t sys_free(void) {
+  return bigalloc_host_budget == (size_t)-1 ? (size_t)-1 / 2 : bigalloc_host_budget - bigalloc_host_used;
+}
+static void *seg_acquire(size_t bytes, int *uid) {
+  if (bigalloc_host_used + bytes > bigalloc_host_budget) return NULL;
+  bigalloc_host_used += bytes;
+  *uid = 1;
+  return malloc(bytes);
+}
+static void  seg_return(void *base, int uid, size_t bytes) { (void)uid; bigalloc_host_used -= bytes; free(base); }
 static void  lock(void) {}
 static void  unlock(void) {}
 #else
 #include <vitasdk.h>
 static SceUID s_mutex = -1;
-static void *seg_acquire(size_t bytes) {
+static void *seg_acquire(size_t bytes, int *uid_out) {
   SceUID uid = sceKernelAllocMemBlock("bigalloc", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW,
                                       (SceSize)bytes, NULL);
   if (uid < 0) return NULL;
   void *base = NULL;
   if (sceKernelGetMemBlockBase(uid, &base) < 0) { sceKernelFreeMemBlock(uid); return NULL; }
+  *uid_out = uid;
   return base;
+}
+static void seg_return(void *base, int uid, size_t bytes) { (void)base; (void)bytes; sceKernelFreeMemBlock(uid); }
+static size_t sys_free(void) {
+  SceKernelFreeMemorySizeInfo fm;
+  fm.size = sizeof fm;
+  return sceKernelGetFreeMemorySize(&fm) >= 0 ? (size_t)fm.size_user : 0;
 }
 static void lock(void)   { if (s_mutex >= 0) sceKernelLockMutex(s_mutex, 1, NULL); }
 static void unlock(void) { if (s_mutex >= 0) sceKernelUnlockMutex(s_mutex, 1); }
@@ -97,14 +114,42 @@ typedef struct {
  * any request this allocator sees is just a hole with bookkeeping on it. */
 #define MIN_SPLIT   (HDR_SZ + 64u * 1024u)
 
+/* A slot whose base is NULL holds no segment: it was handed back to the system
+ * to make room for a jumbo block (below) and is filled again on demand. */
 typedef struct {
   unsigned char *base;
   unsigned char *end;
+  int uid;
 } Seg;
 
 static Seg      s_seg[BIGALLOC_MAX_SEGS];
-static int      s_nseg;
+static int      s_nseg;                   /* slots ever used; only grows */
 static int      s_inited;
+static unsigned s_seg_released;
+
+/* JUMBO BLOCKS. A request larger than a segment can never come from the pool,
+ * and newlib used to take it: 2048x2048 images at loading screens (16 MB each)
+ * and, when saving, the GFF writer's field data -- 16 MB in the Khoonda battle,
+ * reallocated step by step with the old copy alive at each step. Some 70 such
+ * blocks in four minutes went through newlib's arena in the session that died
+ * (save-stuck-20261105), and the last one found no 16 MB run left in it.
+ * Each such request now gets a memblock of its own, returned to the system on
+ * free: nothing to fragment, and the memory exists only while it is used. The
+ * room comes from what vitaGL leaves unclaimed (MEMORY_VITAGL_THRESHOLD_MB),
+ * and a block is only taken while the system keeps BIGALLOC_JUMBO_KEEP_MB free
+ * for everything else; empty pool segments are handed back first if that
+ * helps, and otherwise the request falls back to newlib as before. */
+typedef struct {
+  unsigned char *base;
+  unsigned char *end;
+  int uid;
+  uint32_t size;                          /* as requested */
+} Jumbo;
+#define JUMBO_SLOTS 16
+static Jumbo    s_jumbo[JUMBO_SLOTS];
+static size_t   s_j_live, s_j_peak;
+static unsigned s_j_nlive, s_j_served, s_j_fail;
+static uint32_t s_j_max;
 
 static size_t   s_live, s_peak;           /* payload bytes handed out */
 static unsigned s_nlive, s_nalloc, s_nfallback, s_nsegfail;
@@ -129,14 +174,17 @@ static Hdr *next_hdr(const Seg *s, Hdr *h) {
 
 /* Take one more segment. Called with the lock held. */
 static int seg_add(void) {
-  if (s_nseg >= BIGALLOC_MAX_SEGS) return 0;
+  int slot = -1;
+  for (int i = 0; i < s_nseg; i++)
+    if (!s_seg[i].base) { slot = i; break; }
+  if (slot < 0) {
+    if (s_nseg >= BIGALLOC_MAX_SEGS) return 0;
+    slot = s_nseg;
+  }
   size_t bytes = (size_t)BIGALLOC_SEG_MB * 1024u * 1024u;
-  unsigned char *base = (unsigned char *)seg_acquire(bytes);
+  int uid = -1;
+  unsigned char *base = (unsigned char *)seg_acquire(bytes, &uid);
   if (!base) { s_nsegfail++; return 0; }
-
-  Seg *s = &s_seg[s_nseg];
-  s->base = base;
-  s->end  = base + bytes;
 
   Hdr *h = (Hdr *)base;                    /* one free block spanning it all */
   h->size  = (uint32_t)bytes;
@@ -144,9 +192,74 @@ static int seg_add(void) {
   h->inuse = 0;
   h->magic = MAGIC;
 
-  s_nseg++;
-  log_printf("[big] segment %d: %u MB at %p", s_nseg, (unsigned)BIGALLOC_SEG_MB, (void *)base);
+  /* Lock-free readers (bigalloc_owns) must never see an end without its base:
+   * base first, then end. */
+  Seg *s = &s_seg[slot];
+  s->uid  = uid;
+  s->base = base;
+  __sync_synchronize();
+  s->end  = base + bytes;
+  __sync_synchronize();
+  if (slot == s_nseg) s_nseg++;
+  log_printf("[big] segment %d: %u MB at %p", slot + 1, (unsigned)BIGALLOC_SEG_MB, (void *)base);
   return 1;
+}
+
+/* Hand every wholly free segment back to the system. Called with the lock
+ * held, only when a jumbo block found no room. */
+static unsigned seg_release_empty(void) {
+  size_t bytes = (size_t)BIGALLOC_SEG_MB * 1024u * 1024u;
+  unsigned n = 0;
+  for (int i = 0; i < s_nseg; i++) {
+    Seg *s = &s_seg[i];
+    if (!s->base) continue;
+    Hdr *h = (Hdr *)s->base;
+    if (h->inuse || h->size != bytes) continue;
+    unsigned char *base = s->base;
+    s->end = NULL;                         /* readers first lose the range */
+    __sync_synchronize();
+    s->base = NULL;
+    seg_return(base, s->uid, bytes);
+    n++;
+  }
+  s_seg_released += n;
+  return n;
+}
+
+/* A memblock of its own for a request no segment can hold. Lock held. */
+static void *jumbo_alloc(size_t n) {
+  int slot = -1;
+  for (int i = 0; i < JUMBO_SLOTS; i++)
+    if (!s_jumbo[i].base) { slot = i; break; }
+  if (slot < 0) { s_j_fail++; return NULL; }
+  size_t bytes = (n + 0xfffu) & ~(size_t)0xfffu;
+  size_t keep = (size_t)BIGALLOC_JUMBO_KEEP_MB * 1024u * 1024u;
+  /* Only memory nobody else will miss: the system keeps `keep` free. */
+  if (sys_free() < bytes + keep) seg_release_empty();
+  if (sys_free() < bytes + keep) { s_j_fail++; return NULL; }
+  int uid = -1;
+  unsigned char *base = (unsigned char *)seg_acquire(bytes, &uid);
+  if (!base) { s_j_fail++; return NULL; }
+  Jumbo *j = &s_jumbo[slot];
+  j->uid = uid;
+  j->size = (uint32_t)n;
+  j->base = base;
+  __sync_synchronize();
+  j->end = base + bytes;
+  __sync_synchronize();
+  s_j_live += bytes;
+  if (s_j_live > s_j_peak) s_j_peak = s_j_live;
+  s_j_nlive++;
+  s_j_served++;
+  if (n > s_j_max) s_j_max = (uint32_t)n;
+  return base;
+}
+
+static Jumbo *jumbo_of(const void *p) {
+  const unsigned char *q = (const unsigned char *)p;
+  for (int i = 0; i < JUMBO_SLOTS; i++)
+    if (q >= s_jumbo[i].base && q < s_jumbo[i].end) return &s_jumbo[i];
+  return NULL;
 }
 
 void bigalloc_init(void) {
@@ -169,6 +282,7 @@ static Hdr *find_fit(uint32_t need, Seg **which) {
   Seg *best_seg = NULL;
   for (int i = 0; i < s_nseg; i++) {
     Seg *s = &s_seg[i];
+    if (!s->base) continue;
     for (Hdr *h = (Hdr *)s->base; h; h = next_hdr(s, h)) {
       if (h->inuse || h->size < need) continue;
       if (!best || h->size < best->size) { best = h; best_seg = s; }
@@ -198,6 +312,16 @@ void *bigalloc(size_t n) {
   if (need < n) return NULL;                       /* overflow */
 
   lock();
+  if (need > (uint32_t)BIGALLOC_SEG_MB * 1024u * 1024u) {
+    void *j = BIGALLOC_JUMBO ? jumbo_alloc(n) : NULL;
+    if (!j) {
+      s_nfallback++;
+      s_fb_bytes += need;
+      if (need > s_fb_max) s_fb_max = need;
+    }
+    unlock();
+    return j;
+  }
   Seg *s = NULL;
   Hdr *h = find_fit(need, &s);
   if (!h && seg_add()) h = find_fit(need, &s);
@@ -231,6 +355,9 @@ int bigalloc_owns(const void *p) {
   const unsigned char *q = (const unsigned char *)p;
   for (int i = 0; i < s_nseg; i++)
     if (q >= s_seg[i].base && q < s_seg[i].end) return 1;
+  /* Jumbo slots: same rule as segments -- written base first, end last, and
+   * cleared end first -- so a racing reader never matches a half-made range. */
+  if (s_j_served && jumbo_of(p)) return 1;
   return 0;
 }
 
@@ -243,6 +370,8 @@ static Seg *seg_of(const void *p) {
 
 size_t bigalloc_size(const void *p) {
   if (!bigalloc_owns(p)) return 0;
+  Jumbo *j = jumbo_of(p);
+  if (j) return j->base == (const unsigned char *)p ? j->size : 0;
   const Hdr *h = (const Hdr *)((const unsigned char *)p - HDR_SZ);
   return h->magic == MAGIC ? h->size - HDR_SZ : 0;
 }
@@ -250,7 +379,24 @@ size_t bigalloc_size(const void *p) {
 void bigfree(void *p) {
   if (!p) return;
   Seg *s = seg_of(p);
-  if (!s) return;
+  if (!s) {
+    lock();
+    Jumbo *j = jumbo_of(p);
+    if (j && j->base == (unsigned char *)p) {
+      size_t bytes = (size_t)(j->end - j->base);
+      int uid = j->uid;
+      j->end = NULL;
+      __sync_synchronize();
+      j->base = NULL;
+      seg_return(p, uid, bytes);
+      s_j_live = s_j_live > bytes ? s_j_live - bytes : 0;
+      s_j_nlive--;
+    } else if (j) {
+      log_printf("[big] BAD FREE %p inside a jumbo block", p);
+    }
+    unlock();
+    return;
+  }
 
   lock();
   Hdr *h = hdr_of(p);
@@ -321,9 +467,19 @@ void *big_realloc(void *p, size_t n) {
   return q;
 }
 
+void bigalloc_stats(unsigned *pool_live_mb, unsigned *pool_cap_mb, unsigned *jumbo_mb) {
+  int committed = 0;
+  for (int i = 0; i < s_nseg; i++) committed += s_seg[i].base != NULL;
+  *pool_live_mb = (unsigned)(s_live >> 20);
+  *pool_cap_mb = (unsigned)committed * BIGALLOC_SEG_MB;
+  *jumbo_mb = (unsigned)(s_j_live >> 20);
+}
+
 void bigalloc_log(const char *why) {
   if (!s_nseg) return;
-  size_t cap = (size_t)s_nseg * BIGALLOC_SEG_MB * 1024u * 1024u;
+  int committed = 0;
+  for (int i = 0; i < s_nseg; i++) committed += s_seg[i].base != NULL;
+  size_t cap = (size_t)committed * BIGALLOC_SEG_MB * 1024u * 1024u;
   /* Largest free block, the same figure heap.c reports for newlib and for the
    * same reason: it is what says whether the next big request will land. */
   uint32_t largest = 0;
@@ -332,7 +488,14 @@ void bigalloc_log(const char *why) {
   for (int i = 0; i < s_nseg; i++)
     for (Hdr *h = (Hdr *)s_seg[i].base; h; h = next_hdr(&s_seg[i], h))
       if (!h->inuse) { nfree++; if (h->size > largest) largest = h->size; }
+  unsigned jn = s_j_nlive, js = s_j_served, jf = s_j_fail, rel = s_seg_released;
+  size_t jl = s_j_live, jp = s_j_peak;
+  uint32_t jm = s_j_max;
   unlock();
+  if (js || jf)
+    log_printf("[big] %sjumbo blocks: %u live (%u MB, peak %u MB), %u served (largest %u KB), %u failed, "
+               "%u empty segments handed back", why ? why : "", jn, (unsigned)(jl >> 20), (unsigned)(jp >> 20),
+               js, (unsigned)(jm / 1024u), jf, rel);
 
   log_printf("[big] %s%u/%u MB live in %u blocks (peak %u MB), %u free blocks, "
              "largest %u KB; %u served, %u fell back to malloc "

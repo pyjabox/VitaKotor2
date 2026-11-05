@@ -36,6 +36,7 @@
 #include <zlib.h>
 
 #include "dynlib.h"
+#include "big_trace.h"
 #include "fs_patch.h"
 #include "threads.h"
 #include "log.h"
@@ -959,17 +960,29 @@ static char *fgets_diag(char *buf, int n, FILE *f) {
  * bigalloc.c. The delete operators have to be wrapped for the same reason:
  * libstdc++'s own _ZdlPv calls free(), which would hand a pool pointer to
  * newlib. */
-static void *malloc_diag(size_t n) { MEM_TRACE("malloc", n); heap_note_alloc(n); return big_malloc(n); }
+static void *malloc_diag(size_t n) {
+  MEM_TRACE("malloc", n); heap_note_alloc(n);
+  void *p = big_malloc(n);
+  BIG_TRACE_ALLOC("malloc", n, p, bigalloc_owns(p));
+  return p;
+}
 static void *calloc_diag(size_t a, size_t b) {
   MEM_TRACE("calloc", a * b); heap_note_alloc(a * b);
   size_t n = a * b;
   if (a && n / a != b) return NULL;                 /* overflow */
   void *p = big_malloc(n);
   if (p) memset(p, 0, n);
+  BIG_TRACE_ALLOC("calloc", n, p, bigalloc_owns(p));
   return p;
 }
-static void *realloc_diag(void *p, size_t n) { MEM_TRACE("realloc", n); heap_note_alloc(n); return big_realloc(p, n); }
-static void free_diag(void *p) { big_free(p); }
+static void *realloc_diag(void *p, size_t n) {
+  MEM_TRACE("realloc", n); heap_note_alloc(n);
+  void *q = big_realloc(p, n);
+  if (q != p && q) BIG_TRACE_FREE(p);
+  BIG_TRACE_ALLOC("realloc", n, q, bigalloc_owns(q));
+  return q;
+}
+static void free_diag(void *p) { BIG_TRACE_FREE(p); big_free(p); }
 /* Record the size so the new-handler can report what the failing request was;
  * a single huge allocation and a heap that is simply full need different fixes. */
 static void *Znwj_diag(size_t n) {
@@ -978,15 +991,28 @@ static void *Znwj_diag(size_t n) {
   /* On NULL fall through to the real operator new, which still runs the
    * new-handler and still throws bad_alloc -- the pool must not change what
    * failure looks like to the game. */
-  return p ? p : real_Znwj(n);
+  int pool = p != NULL;
+  if (!p) p = real_Znwj(n);
+  BIG_TRACE_ALLOC("new", n, p, pool);
+  (void)pool;
+  return p;
 }
 static void *Znaj_diag(size_t n) {
   MEM_TRACE("new[]", n); g_heap_last_new = n; heap_note_alloc(n);
   void *p = bigalloc(n);
-  return p ? p : real_Znaj(n);
+  int pool = p != NULL;
+  if (!p) p = real_Znaj(n);
+  BIG_TRACE_ALLOC("new[]", n, p, pool);
+  (void)pool;
+  return p;
 }
-static void ZdlPv_diag(void *p) { if (bigalloc_owns(p)) bigfree(p); else real_ZdlPv(p); }
-static void ZdaPv_diag(void *p) { if (bigalloc_owns(p)) bigfree(p); else real_ZdaPv(p); }
+static void ZdlPv_diag(void *p) { BIG_TRACE_FREE(p); if (bigalloc_owns(p)) bigfree(p); else real_ZdlPv(p); }
+static void ZdaPv_diag(void *p) { BIG_TRACE_FREE(p); if (bigalloc_owns(p)) bigfree(p); else real_ZdaPv(p); }
+/* The engine's own operator new[] / delete[] as its calls reach them, for
+ * loader code that replaces an engine function owning such a block
+ * (gff_grow.c). */
+void *k2_new_array(size_t n) { return Znaj_diag(n); }
+void k2_delete_array(void *p) { ZdaPv_diag(p); }
 
 // ---- libm gaps (absent from this newlib) ----------------------------------
 // Derive from available primitives; accuracy is ample for game math.

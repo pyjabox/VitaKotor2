@@ -46,6 +46,8 @@
 #include "leaf_fast.h"
 #include "plt_direct.h"
 #include "proc_anim.h"
+#include "heap.h"
+#include "ai_events.h"
 #include "cansee_cache.h"
 #include "gl_state_filter.h"
 #include "so_util.h"
@@ -110,6 +112,8 @@ static void SDL_GL_SwapWindow_hook(SDL_Window *w) {
   menu_cache_on_swap();
   leaf_fast_on_swap();
   proc_anim_on_swap();
+  heap_mem_on_swap();
+  ai_events_on_swap();
   plt_direct_on_swap();
   cansee_cache_on_swap();
 #if PC_PROF

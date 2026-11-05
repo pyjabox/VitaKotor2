@@ -78,6 +78,11 @@
 // leaves it ~42 MB of headroom against a working set it has never exceeded,
 // and the pool commits segments lazily, so if the extra is never needed it
 // simply stays unclaimed instead of sitting idle inside vitaGL.
+//
+// Tried 112 on 2026-11-05 to make room for the pool's jumbo blocks: vitaGL's
+// RAM pool shrank to 51 MB and its free RAM fell to 0-7 MB in play ([mem] line,
+// diagnostics/save-stuck-20261105/hw-savefix-log.txt), with 54-62 MB of system
+// memory idle. KOTOR II's vitaGL needs more than 51 MB; 80 leaves it ~83.
 #define MEMORY_VITAGL_THRESHOLD_MB 80
 
 // Big-allocation pool (bigalloc.c). Everything at or above BIGALLOC_MIN_BYTES is
@@ -106,6 +111,31 @@
 // Segments are committed on demand, so this is a ceiling and not a reservation.
 // The fallback line now carries total bytes and worst single request, which is
 // what will say whether 64 is enough or still short.
+// Diagnostic: log every allocation of BIG_TRACE_MIN_KB or more with its callers,
+// the allocator that served it, and its free ([bigtrace] lines; big_trace.c).
+#ifndef BIG_TRACE
+#define BIG_TRACE                 0
+#endif
+#ifndef BIG_TRACE_MIN_KB
+#define BIG_TRACE_MIN_KB          1024
+#endif
+// Diagnostic: the server's AI event queue, counted by type and caller every
+// 10 s ([aievents] lines; ai_events.c).
+#ifndef AI_EVENTS_DIAG
+#define AI_EVENTS_DIAG            0
+#endif
+// Requests larger than a segment get a memblock of their own (bigalloc.c), but
+// only while the system keeps BIGALLOC_JUMBO_KEEP_MB free for everything else
+// (threads, movies, sound); otherwise they go to newlib as before.
+#ifndef BIGALLOC_JUMBO
+#define BIGALLOC_JUMBO            1
+#endif
+#define BIGALLOC_JUMBO_KEEP_MB    16
+// The engine's GFF writer grows its field data by at least an eighth instead of
+// a fixed ~119 KB (gff_grow.c; gff_mode.txt 0 leaves the engine's own).
+#ifndef GFF_GROW
+#define GFF_GROW                  1
+#endif
 #define BIGALLOC_MIN_BYTES (256u * 1024u)
 #define BIGALLOC_SEG_MB    8
 #define BIGALLOC_MAX_SEGS  8
@@ -975,6 +1005,12 @@
 #define GL_WORKER_DEDUP           1
 #ifndef GL_WORKER_DEDUP_AB
 #define GL_WORKER_DEDUP_AB        0
+#endif
+// Diagnostic: count the commands the game thread records, by function, with
+// how many repeat that function's previous call word for word, and log one
+// stretch of a frame's commands in order ([glw] census lines, every 10 s).
+#ifndef GLW_CENSUS
+#define GLW_CENSUS                0
 #endif
 // Diagnostic: sample where the game thread's frame goes (loader/glw_prof.c).
 #ifndef GL_WORKER_PROFILE

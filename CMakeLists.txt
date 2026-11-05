@@ -107,6 +107,9 @@ add_executable(KOTOR2
   loader/crash.c
   loader/heap.c
   loader/bigalloc.c
+  loader/big_trace.c
+  loader/gff_grow.c
+  loader/ai_events.c
   loader/log.c
 )
 

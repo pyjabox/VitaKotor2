@@ -33,6 +33,9 @@ void *big_malloc(size_t n);
 void  big_free(void *p);
 void *big_realloc(void *p, size_t n);
 
+/* MB live and committed in the pool, and MB in live jumbo blocks. */
+void bigalloc_stats(unsigned *pool_live_mb, unsigned *pool_cap_mb, unsigned *jumbo_mb);
+
 /* One line of pool stats, emitted alongside the heap sample. */
 void bigalloc_log(const char *why);
 

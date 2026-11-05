@@ -206,8 +206,15 @@ uint32_t *glw_begin(uint32_t op, uint32_t nargs, uint32_t data_bytes) {
   return c + 1;
 }
 
+#if GLW_CENSUS
+static void census_note(const uint32_t *c);
+#endif
+
 static void publish(void) {
   uint32_t h = s_cur[0];
+#if GLW_CENSUS
+  census_note(s_cur);
+#endif
   s_wr += h >> 16;
   st_cmds++;
   if (++s_unpub >= s_batch || (h & GLW_SYNC) || (h & GLW_OP_MASK) == COP_SWAP) flush();
@@ -1120,6 +1127,250 @@ void gl_worker_attach_producer(void) {
 }
 
 /* Every DRAW_FRAME window: stream, sync, capture and pacing figures. */
+/* Names of the custom ops, for the reports. */
+static const char *const s_cop_names[] = {
+  "wrap", "vap", "ffpPtr", "attrEnable", "clientState", "bindBuffer", "deleteBuffers", "drawArrays",
+  "drawElements", "pixelStore", "useProgram", "swap", "getProc", "drawArraysRaw", "drawElementsRaw",
+  "enable", "bindFb", "scissor", "viewport", "beginQuery", "endQuery", "deleteProgram", "createProgram",
+  "genQueries", "isProgram(sync)", "isEnabled(sync)", "getIntegerv(sync)", "getQuery(sync)", "getError",
+  "call",
+};
+#define S_NCOP (sizeof s_cop_names / sizeof s_cop_names[0])
+
+#if GLW_CENSUS
+/* GLW_CENSUS (diagnostic): every command the game thread publishes, counted by
+ * op, with how many repeat that op's previous command word for word, and one
+ * stretch of a mid-frame's commands logged in order. */
+#include "asl_worker_internal.h"
+#define CEN_N 0x1100u
+#define CEN_WORDS 20u
+#define CEN_SEQ_AT 12000u
+#define CEN_SEQ_LEN 700u
+static uint32_t cen_count[CEN_N], cen_rep[CEN_N], cen_words[CEN_N];
+static uint32_t cen_last[CEN_N][CEN_WORDS + 1];
+static uint32_t cen_frame_cmds, cen_seq_n, cen_seq_state;   /* 0 waiting, 1 taking, 2 taken */
+static struct { uint16_t idx; uint32_t a0; } cen_seq[CEN_SEQ_LEN];
+
+/* Redundancy against GL state: each op's calls are keyed by what they select
+ * (light and pname, texture unit, bound buffer...) and a call is redundant when
+ * its values equal the last ones set under the same key. Enables are tracked
+ * as on/off per cap. Kinds: */
+enum { K_LAST = 0, K_SEL, K_ENABLE, K_DISABLE, K_SCALE, K_MULT, K_NEVER };
+typedef struct { uint8_t kind, nsel, unit, buf, pay; } cen_rule_t;  /* pay: first payload word */
+static cen_rule_t cen_rule[CEN_N];
+static uint32_t cen_red[CEN_N];                  /* redundant by the keyed rule */
+static uint32_t cen_unit, cen_cunit, cen_abuf, cen_tex2d[16];
+static uint32_t cen_ix_active, cen_ix_cactive, cen_ix_bindbuf, cen_ix_bindtex, cen_ix_scale;
+#define CEN_H 8192u
+static struct { uint32_t k[4]; uint32_t n; uint32_t v[CEN_WORDS]; } cen_tab[CEN_H];
+
+static void cen_rules_init(void) {
+#if ASLW
+  static const struct { const char *name; uint8_t kind, nsel, unit, buf, pay; } R0[] = {
+    {"glProgramEnvParameter4fARB", K_SEL, 2, 0, 0, 2}, {"glProgramEnvParameter4fvARB", K_SEL, 2, 0, 0, 3},
+    {"glProgramLocalParameter4fARB", K_SEL, 2, 0, 0, 2}, {"glProgramLocalParameter4fvARB", K_SEL, 2, 0, 0, 3},
+    {"glLightfv", K_SEL, 2, 0, 0, 3}, {"glLightf", K_SEL, 2, 0, 0, 2},
+    {"glMaterialfv", K_SEL, 2, 0, 0, 3}, {"glMaterialf", K_SEL, 2, 0, 0, 2},
+    {"glTexEnvi", K_SEL, 2, 1, 0, 2}, {"glTexEnvf", K_SEL, 2, 1, 0, 2}, {"glTexEnvfv", K_SEL, 2, 1, 0, 3},
+    {"glTexGeni", K_SEL, 2, 1, 0, 2}, {"glTexGenf", K_SEL, 2, 1, 0, 2}, {"glTexGenfv", K_SEL, 2, 1, 0, 3},
+    {"glTexParameteri", K_SEL, 2, 2, 0, 2}, {"glTexParameterf", K_SEL, 2, 2, 0, 2},
+    {"glFogf", K_SEL, 1, 0, 0, 1}, {"glFogi", K_SEL, 1, 0, 0, 1}, {"glFogfv", K_SEL, 1, 0, 0, 2},
+    {"glLightModelfv", K_SEL, 1, 0, 0, 2}, {"glLightModeli", K_SEL, 1, 0, 0, 1}, {"glLightModelf", K_SEL, 1, 0, 0, 1},
+    {"glBindTexture", K_SEL, 1, 1, 0, 1}, {"glBindBufferARB", K_SEL, 1, 0, 0, 1}, {"glBindBuffer", K_SEL, 1, 0, 0, 1},
+    {"glBindProgramARB", K_SEL, 1, 0, 0, 1},
+    {"glVertexPointer", K_SEL, 0, 0, 1, 0}, {"glNormalPointer", K_SEL, 0, 0, 1, 0},
+    {"glColorPointer", K_SEL, 0, 0, 1, 0}, {"glTexCoordPointer", K_SEL, 0, 3, 1, 0},
+    {"glVertexAttribPointerARB", K_SEL, 1, 0, 1, 1}, {"glVertexAttribPointer", K_SEL, 1, 0, 1, 1},
+    {"glEnable", K_ENABLE, 1, 1, 0, 0}, {"glDisable", K_DISABLE, 1, 1, 0, 0},
+    {"glEnableClientState", K_ENABLE, 1, 3, 0, 0}, {"glDisableClientState", K_DISABLE, 1, 3, 0, 0},
+    {"glEnableVertexAttribArrayARB", K_ENABLE, 1, 0, 0, 0}, {"glDisableVertexAttribArrayARB", K_DISABLE, 1, 0, 0, 0},
+    {"glEnableVertexAttribArray", K_ENABLE, 1, 0, 0, 0}, {"glDisableVertexAttribArray", K_DISABLE, 1, 0, 0, 0},
+    {"glScalef", K_SCALE, 0, 0, 0, 0}, {"glMultMatrixf", K_MULT, 0, 0, 0, 0},
+    {"glPushMatrix", K_NEVER, 0, 0, 0, 0}, {"glPopMatrix", K_NEVER, 0, 0, 0, 0},
+    {"glLoadMatrixf", K_NEVER, 0, 0, 0, 0}, {"glLoadIdentity", K_NEVER, 0, 0, 0, 0},
+    {"glTranslatef", K_NEVER, 0, 0, 0, 0}, {"glRotatef", K_NEVER, 0, 0, 0, 0}, {"glOrtho", K_NEVER, 0, 0, 0, 0},
+    {"glDrawElements", K_NEVER, 0, 0, 0, 0}, {"glDrawArrays", K_NEVER, 0, 0, 0, 0},
+    {"glBegin", K_NEVER, 0, 0, 0, 0}, {"glEnd", K_NEVER, 0, 0, 0, 0}, {"glVertex2f", K_NEVER, 0, 0, 0, 0},
+    {"glVertex3f", K_NEVER, 0, 0, 0, 0}, {"glVertex4f", K_NEVER, 0, 0, 0, 0}, {"glTexCoord2f", K_NEVER, 0, 0, 0, 0},
+    {"glColor4ubv", K_NEVER, 0, 0, 0, 0}, {"glCallLists", K_NEVER, 0, 0, 0, 0},
+  };
+  for (uint32_t a = 0; a < aslw_nfns; a++) {
+    const char *nm = aslw_fns[a].name;
+    uint32_t i = 0x800u + a;
+    for (uint32_t r = 0; r < sizeof R0 / sizeof R0[0]; r++)
+      if (!strcmp(nm, R0[r].name)) {
+        cen_rule[i].kind = R0[r].kind; cen_rule[i].nsel = R0[r].nsel; cen_rule[i].unit = R0[r].unit;
+        cen_rule[i].buf = R0[r].buf; cen_rule[i].pay = R0[r].pay;
+      }
+    if (!strcmp(nm, "glActiveTextureARB") || !strcmp(nm, "glActiveTexture")) {
+      if (!cen_ix_active) cen_ix_active = i; else cen_rule[i].unit = 9;   /* marker: also active */
+    }
+    if (!strcmp(nm, "glClientActiveTextureARB")) cen_ix_cactive = i;
+    if (!strcmp(nm, "glBindBufferARB")) cen_ix_bindbuf = i;
+    if (!strcmp(nm, "glBindTexture")) cen_ix_bindtex = i;
+    if (!strcmp(nm, "glScalef")) cen_ix_scale = i;
+  }
+#endif
+}
+
+static int cen_keyed(uint32_t i, const uint32_t *a, uint32_t n) {
+  const cen_rule_t *r = &cen_rule[i];
+  uint32_t k[4] = {i, 0, 0, 0}, kn = 1;
+  for (uint32_t s = 0; s < r->nsel && s < n && kn < 4; s++) k[kn++] = a[s];
+  uint32_t cap = n ? a[0] : 0;
+  if (r->unit == 1 && (r->kind == K_SEL || cap == 0xde1 || cap == 0xde0 || cap == 0x8513 || (cap >= 0xc60 && cap <= 0xc63)))
+    k[0] |= (cen_unit & 15u) << 16;
+  if (r->unit == 2 && n) k[0] |= (cen_tex2d[cen_unit & 15u] & 0xffffu) << 16;     /* texture object */
+  if (r->unit == 3 && (r->kind == K_SEL || cap == 0x8078)) k[0] |= (cen_cunit & 15u) << 16;
+  if (r->buf) k[3] ^= cen_abuf * 0x9e3779b1u;
+  const uint32_t *v;
+  uint32_t vn, onoff = r->kind == K_ENABLE;
+  if (r->kind == K_ENABLE || r->kind == K_DISABLE) {
+    /* Enable and disable share one key: the family (glEnable, client state,
+     * attribute arrays), the unit where it matters, and the cap. */
+    k[0] = 0x7f000000u | (uint32_t)r->unit << 8 | (k[0] >> 16 & 15u);
+    k[2] = k[3] = 0;
+    v = &onoff;
+    vn = 1;
+  } else {
+    if (r->pay > n) return 0;
+    v = a + r->pay;
+    vn = n - r->pay;
+    if (vn > CEN_WORDS) return 0;
+  }
+  uint32_t h = (k[0] * 0x9e3779b1u) ^ (k[1] * 0x85ebca6bu) ^ (k[2] * 0xc2b2ae35u) ^ k[3];
+  h ^= h >> 15;
+  for (uint32_t probe = 0; probe < 16; probe++) {
+    uint32_t j = (h + probe) & (CEN_H - 1u);
+    if (!cen_tab[j].n) {
+      memcpy(cen_tab[j].k, k, sizeof k);
+      cen_tab[j].n = vn + 1u;
+      memcpy(cen_tab[j].v, v, vn * 4u);
+      return 0;
+    }
+    if (!memcmp(cen_tab[j].k, k, sizeof k)) {
+      int same = cen_tab[j].n == vn + 1u && !memcmp(cen_tab[j].v, v, vn * 4u);
+      cen_tab[j].n = vn + 1u;
+      memcpy(cen_tab[j].v, v, vn * 4u);
+      return same;
+    }
+  }
+  return 0;
+}
+
+static uint32_t cen_idx(uint32_t op) {
+  if (op < 0x800u) return op;
+  if (op >= ASLW_OP_BASE && op < ASLW_OP_BASE + 0x900u) return 0x800u + (op - ASLW_OP_BASE);
+  return 0x7ffu;
+}
+static const char *cen_name(uint32_t i) {
+  static const char *const aslw_custom[] = {"aslGlobals", "aslArrSet", "aslArrRestore", "aslDrawEClient",
+                                            "aslNop", "aslCall", "aslResync"};
+  if (i < GLW_OP_CUSTOM_BASE) return glw_op_names[i];   /* only generated ops are recorded below the custom base */
+  if (i < 0x800u) return i - GLW_OP_CUSTOM_BASE < S_NCOP ? s_cop_names[i - GLW_OP_CUSTOM_BASE] : "glw-custom";
+  uint32_t a = i - 0x800u;
+#if ASLW
+  if (a < aslw_nfns) return aslw_fns[a].name;
+#endif
+  if (a >= ASLW_OP_CUSTOM - ASLW_OP_BASE && a - (ASLW_OP_CUSTOM - ASLW_OP_BASE) < 7u)
+    return aslw_custom[a - (ASLW_OP_CUSTOM - ASLW_OP_BASE)];
+  return "?";
+}
+
+static void census_note(const uint32_t *c) {
+  uint32_t h = c[0], op = h & GLW_OP_MASK, n = (h >> 16) - 1u, i = cen_idx(op);
+  if (op == COP_SWAP) {
+    cen_frame_cmds = 0;
+    if (cen_seq_state == 1) cen_seq_state = 2;   /* the frame ended first: keep what was taken */
+    return;
+  }
+  static int inited;
+  if (!inited) { inited = 1; cen_rules_init(); }
+  cen_count[i]++;
+  cen_words[i] += n + 1u;
+  {
+    const uint32_t *a = c + 1;
+    const cen_rule_t *r = &cen_rule[i];
+    int red = 0;
+    if (r->kind == K_SCALE) red = n >= 3 && a[0] == 0x3f800000u && a[1] == 0x3f800000u && a[2] == 0x3f800000u;
+    else if (r->kind == K_MULT) {
+      static const uint32_t id[16] = {0x3f800000u, 0, 0, 0, 0, 0x3f800000u, 0, 0, 0, 0, 0x3f800000u, 0, 0, 0, 0, 0x3f800000u};
+      red = n >= 17 && !memcmp(a + 1, id, sizeof id);
+    } else if (r->kind == K_SEL || r->kind == K_ENABLE || r->kind == K_DISABLE) red = cen_keyed(i, a, n);
+    else if (r->kind == K_LAST) red = -1;           /* judged by the plain repeat below */
+    if (red > 0) cen_red[i]++;
+    if (i == cen_ix_active || r->unit == 9) cen_unit = n ? a[0] - 0x84c0u : 0;
+    if (i == cen_ix_cactive) cen_cunit = n ? a[0] - 0x84c0u : 0;
+    if (i == cen_ix_bindbuf && n >= 2 && a[0] == 0x8892u) cen_abuf = a[1];
+    if (i == cen_ix_bindtex && n >= 2 && a[0] == 0xde1u) cen_tex2d[cen_unit & 15u] = a[1];
+  }
+  uint32_t *l = cen_last[i];
+  if (n <= CEN_WORDS) {
+    if (l[0] == n + 1u && !memcmp(l + 1, c + 1, n * 4u)) cen_rep[i]++;
+    else { l[0] = n + 1u; memcpy(l + 1, c + 1, n * 4u); }
+  } else {
+    l[0] = 0;
+  }
+  if (++cen_frame_cmds == CEN_SEQ_AT && cen_seq_state == 0) { cen_seq_state = 1; cen_seq_n = 0; }
+  if (cen_seq_state == 1) {
+    cen_seq[cen_seq_n].idx = (uint16_t)i;
+    cen_seq[cen_seq_n].a0 = n ? c[1] : 0;
+    if (++cen_seq_n == CEN_SEQ_LEN) cen_seq_state = 2;
+  }
+}
+
+static void census_report(uint32_t f) {
+  uint32_t total = 0, words = 0, rep = 0, red = 0;
+  for (uint32_t i = 0; i < CEN_N; i++) {
+    total += cen_count[i]; words += cen_words[i]; rep += cen_rep[i];
+    red += cen_rule[i].kind == K_LAST ? cen_rep[i] : cen_rule[i].kind == K_NEVER ? 0 : cen_red[i];
+  }
+  log_printf("[glw] census %u frames: %u cmds/frame (%u words), %u.%u%% repeat their op's previous call, "
+             "%u.%u%% change no state (keyed)",
+             f, total / f, words / f, total ? rep * 100u / total : 0, total ? rep * 1000u / total % 10u : 0,
+             total ? red * 100u / total : 0, total ? red * 1000u / total % 10u : 0);
+  for (int line = 0; line < 4; line++) {
+    char buf[900];
+    int o = 0;
+    buf[0] = 0;
+    for (int k = 0; k < 10; k++) {
+      uint32_t best = 0, bi = 0;
+      for (uint32_t i = 0; i < CEN_N; i++)
+        if (cen_count[i] > best) { best = cen_count[i]; bi = i; }
+      if (!best) break;
+      uint32_t rr = cen_rule[bi].kind == K_LAST ? cen_rep[bi] : cen_rule[bi].kind == K_NEVER ? 0 : cen_red[bi];
+      o += snprintf(buf + o, sizeof buf - (size_t)o, " %s=%u(%u%% rep, %u%% red, %uw)", cen_name(bi), best / f,
+                    cen_rep[bi] * 100u / best, rr * 100u / best, cen_words[bi] / best);
+      cen_count[bi] = 0;
+      if (o >= (int)sizeof buf - 80) break;
+    }
+    if (!o) break;
+    log_printf("[glw] census top%s", buf);
+  }
+  memset(cen_count, 0, sizeof cen_count);
+  memset(cen_rep, 0, sizeof cen_rep);
+  memset(cen_red, 0, sizeof cen_red);
+  memset(cen_words, 0, sizeof cen_words);
+  if (cen_seq_state == 2) {
+    char buf[900];
+    int o = 0;
+    for (uint32_t k = 0; k < cen_seq_n;) {
+      uint32_t r = 1;
+      while (k + r < cen_seq_n && cen_seq[k + r].idx == cen_seq[k].idx && cen_seq[k + r].a0 == cen_seq[k].a0) r++;
+      o += snprintf(buf + o, sizeof buf - (size_t)o, r > 1 ? " %s(%x)x%u" : " %s(%x)", cen_name(cen_seq[k].idx),
+                    (unsigned)cen_seq[k].a0, (unsigned)r);
+      k += r;
+      if (o >= (int)sizeof buf - 80 || k >= cen_seq_n) {
+        log_printf("[glw] census seq:%s", buf);
+        o = 0;
+        buf[0] = 0;
+      }
+    }
+    cen_seq_state = 0;
+  }
+}
+#endif
+
 static void glw_report(void) {
   static uint64_t t0;
   static uint32_t frames;
@@ -1138,21 +1389,18 @@ static void glw_report(void) {
     for (uint32_t i = 0; i < sizeof st_sync_by_op / sizeof st_sync_by_op[0]; i++)
       if (st_sync_by_op[i] > best) { best = st_sync_by_op[i]; bi = i; }
     if (!best) break;
-    static const char *const cop[] = {
-      "wrap", "vap", "ffpPtr", "attrEnable", "clientState", "bindBuffer", "deleteBuffers", "drawArrays",
-      "drawElements", "pixelStore", "useProgram", "swap", "getProc", "drawArraysRaw", "drawElementsRaw",
-      "enable", "bindFb", "scissor", "viewport", "beginQuery", "endQuery", "deleteProgram", "createProgram",
-      "genQueries", "isProgram(sync)", "isEnabled(sync)", "getIntegerv(sync)", "getQuery(sync)", "getError",
-      "call",
-    };
+    const char *const *cop = s_cop_names;
     const char *nm = bi < GLW_OP_CUSTOM_BASE ? glw_op_names[bi]
-                     : bi - GLW_OP_CUSTOM_BASE < sizeof cop / sizeof cop[0] ? cop[bi - GLW_OP_CUSTOM_BASE] : "custom";
+                     : bi - GLW_OP_CUSTOM_BASE < S_NCOP ? cop[bi - GLW_OP_CUSTOM_BASE] : "custom";
     o += snprintf(top + o, sizeof top - o, " %s=%u", nm, best / f);
     st_sync_by_op[bi] = 0;
   }
   memset(st_sync_by_op, 0, sizeof st_sync_by_op);
 #if GL_WORKER_PROFILE
   glw_prof_report(f, now - t0);
+#endif
+#if GLW_CENSUS
+  census_report(f);
 #endif
   if (glw_ro.mode != 0) {
   log_printf("[glw] batch %u dedup %d: wakes %u/frame, skipped %u/frame", (unsigned)s_batch, s_dedup,

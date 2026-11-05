@@ -17,6 +17,12 @@ void heap_log(const char *why);
 // and for failures, not every tick.
 void heap_log_full(const char *why);
 
+// [mem]: newlib, the big-block pool, vitaGL's pools and the system's free
+// memory on one line that release builds keep. heap_mem_on_swap (game thread)
+// samples vitaGL every 5 s on the GL worker and logs the line every 60 s.
+void heap_mem_report(const char *why);
+void heap_mem_on_swap(void);
+
 // Record an allocation for the large-request census. Ignores anything under
 // 256 KB; callers need not filter.
 void heap_note_alloc(unsigned n);

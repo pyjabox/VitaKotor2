@@ -54,6 +54,10 @@
 #include "bigalloc.h"
 #include "config.h"
 #include "log.h"
+#include "gl_worker.h"
+#include "gff_grow.h"
+#include "big_trace.h"
+#include <vitaGL.h>
 
 volatile unsigned g_heap_last_new = 0;
 
@@ -190,9 +194,75 @@ void heap_log(const char *why) {
   bigalloc_log(why);
 }
 
+/* ---- [mem]: memory on one line, kept in release builds ------------------------
+ *
+ * The release log keeps a line only if its format names a kept tag or a
+ * failure word, so the [heap] lines above never reached the release log of the
+ * save crash (save-stuck-20261105): it said a 16 MB new failed and nothing
+ * about the heap it failed in. This line goes out every 60 s and at every
+ * failure: newlib (used, arena, the largest block it can still serve), the
+ * big-block pool and its jumbo blocks, vitaGL's RAM and VRAM pools (free now
+ * and the lowest seen, sampled on the GL worker -- the pools are vitaGL's
+ * own), and what the system still has unallocated. */
+static volatile uint32_t s_vgl_ram_free, s_vgl_ram_total, s_vgl_vram_free, s_vgl_vram_total;
+static volatile uint32_t s_vgl_ram_min = 0xffffffffu, s_vgl_vram_min = 0xffffffffu;
+static volatile int s_vgl_seen;
+
+static void vgl_probe(const uint32_t *args, const void *data) {
+  (void)args; (void)data;
+  uint32_t rf = (uint32_t)vglMemFree(VGL_MEM_RAM), vf = (uint32_t)vglMemFree(VGL_MEM_VRAM);
+  s_vgl_ram_free = rf;
+  s_vgl_vram_free = vf;
+  s_vgl_ram_total = (uint32_t)vglMemTotal(VGL_MEM_RAM);
+  s_vgl_vram_total = (uint32_t)vglMemTotal(VGL_MEM_VRAM);
+  if (rf < s_vgl_ram_min) s_vgl_ram_min = rf;
+  if (vf < s_vgl_vram_min) s_vgl_vram_min = vf;
+  s_vgl_seen = 1;
+}
+
+void heap_mem_report(const char *why) {
+  struct mallinfo mi = mallinfo();
+  unsigned big = heap_largest_block((unsigned)mi.fordblks);
+  unsigned pool_live, pool_cap, jumbo_live;
+  bigalloc_stats(&pool_live, &pool_cap, &jumbo_live);
+  SceKernelFreeMemorySizeInfo fm;
+  fm.size = sizeof fm;
+  unsigned sys_free = sceKernelGetFreeMemorySize(&fm) >= 0 ? (unsigned)fm.size_user : 0;
+  log_printf("[mem] %snewlib %u.%u MB used, arena %u.%u of %u MB, largest free block %u KB | pool %u of %u MB live, "
+             "jumbo %u MB | vitaGL RAM free %u of %u MB (lowest %u), VRAM free %u of %u MB (lowest %u) | system free %u MB",
+             why ? why : "", tenths_mb((unsigned)mi.uordblks) / 10, tenths_mb((unsigned)mi.uordblks) % 10,
+             tenths_mb((unsigned)mi.arena) / 10, tenths_mb((unsigned)mi.arena) % 10, (unsigned)MEMORY_NEWLIB_MB,
+             big / 1024u, pool_live, pool_cap, jumbo_live,
+             s_vgl_seen ? (unsigned)(s_vgl_ram_free >> 20) : 0, (unsigned)(s_vgl_ram_total >> 20),
+             s_vgl_seen ? (unsigned)(s_vgl_ram_min >> 20) : 0,
+             s_vgl_seen ? (unsigned)(s_vgl_vram_free >> 20) : 0, (unsigned)(s_vgl_vram_total >> 20),
+             s_vgl_seen ? (unsigned)(s_vgl_vram_min >> 20) : 0, sys_free >> 20);
+  bigalloc_log(why);
+}
+
+/* Game thread, at each swap: vitaGL sampled every 5 s, the line every 60 s. */
+void heap_mem_on_swap(void) {
+  static uint64_t t_probe, t_log;
+  uint64_t now = sceKernelGetProcessTimeWide();
+  if (!t_log) t_log = now;
+  if (now - t_probe >= 5000000u) {
+    t_probe = now;
+    glw_call(vgl_probe, NULL, 0, NULL, 0);
+    gff_grow_report(NULL);
+  }
+  if (now - t_log >= 60000000u) {
+    t_log = now;
+    heap_mem_report(NULL);
+  }
+}
+
 static void heap_new_handler(void) {
   log_printf("[heap] ALLOCATION FAILED (last new through dynlib was %u bytes)",
              g_heap_last_new);
+#if BIG_TRACE
+  big_trace_alloc("failed new", g_heap_last_new, NULL, 0, 0);   /* who asked: the stack */
+#endif
+  heap_mem_report("at failure: ");
   heap_log_full("at failure: ");
   // An uncaught bad_alloc reaches newlib's UDF-based abort, which emulators may not
   // dispatch through our CPU-fault handler. Flush here so the request size and

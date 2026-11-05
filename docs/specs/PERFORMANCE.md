@@ -549,6 +549,28 @@ libkotor2 is already ARMv7 code: Android NDK clang 9, Thumb-2, VFPv3 with NEON, 
 - **Particles:** in the battle they cost almost nothing to move. Their ~6% is collision: `ExplosionEmitter::Update` → `moveParticleStandard` → `Scene::HitCheck` for each particle, each frame. Cutting it would change how debris bounces.
 - **Battle profile, AI worker:** scripts. RunScript 58%, the NWScript interpreter loop (ExecuteCode) 20% self, CSWSCreature::EventHandler 48%, ExecuteScript 45%.
 
+### 5.17 Saving in big fights
+
+On 2026-11-05 saving during the Khoonda battle crashed on the SAVING screen: one `operator new` of 16 MB failed, with the heap 97 MB used of 160 (`diagnostics/save-stuck-20261105`). Three things were behind it, all in the engine's save code, and all fixed in `loader/gff_grow.c` (`GFF_GROW`, on by default; `gff_mode.txt` and `slim_mode.txt` turn its parts off).
+
+- **A full script copy per pending event.** Each pending scripted event (a `DelayCommand`, a queued action with a script) is saved by `CVirtualMachineInternal::SaveScriptSituation` with the whole compiled script ("Code", "CodeSize"). In that fight 306 events were pending, all the same 121,624-byte script: one area's record was 37 MB, and loading it allocated another 37 MB.
+  - The engine already has a code-less form: when it cannot read a script it saves `CodeSize` 0, and when such an event fires, `SetUpScriptSituation` reads the script by name. Most events are held that way in memory anyway, and the save read the file only to embed it.
+  - Now an event whose code is byte for byte its script file (read once per script and save, as the engine reads it), or that holds no code, is saved without the copy. The engine's two writes in each branch of `SaveScriptSituation` are told apart by return address: `CodeSize` is written as 0 and `Code` is skipped.
+  - Vita3K, start of the Khoonda fight on pause: 52 events saved this way, and the area record's largest buffer went from 7.5 MB to 95 KB. The save loads, its events fire, and a save made from it is as small.
+  - Hardware: the battle save has 31 events saved this way, and its record's largest buffer is 107 KB. The battle area's state went from 40.5 MB to 1.5 MB.
+  - A slim save takes those scripts from the game's files when it loads, so loading it with different mods could resume a changed script.
+- **The record's growth.** `CResGFF::AddDataField` grew the field data by a fixed ~119 KB step: new block, copy, free. For 16 MB that is about 137 reallocations, a gigabyte of copying, and old and new blocks alive at once.
+  - Ours grows by at least an eighth, from 256 KB through newlib's `realloc` (in place when the memory after it is free). Otherwise it is the engine's code.
+  - Its one other change is a fix: a moved field that shrinks has `min(old, new)` bytes copied, where the engine copies `old` past its own room.
+  - `tools/test_gff_grow.c` runs it against a separate transcription of the engine's function on random field writes: same offsets, sizes and contents, with 0–30 reallocations against 128–232 to reach 24 MB.
+- **Empty strings saved without a length.** `CResGFF::WriteFieldCExoString` does not store the length word of an empty string. It relies on zeroed memory, so on the Vita each one is saved with whatever the buffer held: `LIVE1`–`LIVE6` in `savenfo.res` hold text fragments, in saves of every version.
+  - The engine's reader checks a length only against the data after it, so a stray length that fits becomes a string of that size. The Dantooine save read back one of 18.9 MB, and the next save would write it for real.
+  - Now the new room for every field starts zeroed, and `CResGFF::ReadFieldCExoString` reads any string over 64 KB as empty, with a length check that cannot wrap.
+- **Large requests.** Requests larger than a pool segment (8 MB) now get a memblock of their own, but only while the system keeps 16 MB free; otherwise they go to newlib as before (`bigalloc.c`, `BIGALLOC_JUMBO`).
+  - Leaving vitaGL 32 MB less to fund them was tried and undone: its RAM pool, 51 MB, fell to 0–7 MB free in play. `MEMORY_VITAGL_THRESHOLD_MB` stays at 80, which leaves it 83 MB with 32–39 MB free in the battle.
+  - A `[mem]` line, kept in release logs, reports newlib, the pool, these blocks, vitaGL's pools and the system's free memory every 60 s and at any allocation failure.
+- **Not fixed:** a save already holding a huge area record (the 82 MB save of that day) still has its old area file read back in full while saving, about 40 MB at once. Saves made from a healthy state never reach that size.
+
 ## 6. Room and visibility experiments
 
 ### 6.1 Scoped VIS edge: successful proof

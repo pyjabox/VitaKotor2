@@ -48,6 +48,8 @@
 #include "leaf_fast.h"
 #include "plt_direct.h"
 #include "proc_anim.h"
+#include "gff_grow.h"
+#include "ai_events.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -4956,6 +4958,8 @@ int main(int argc, char *argv[]) {
   menu_cache_install();
   leaf_fast_install();
   proc_anim_install();
+  gff_grow_install();
+  ai_events_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
 #else

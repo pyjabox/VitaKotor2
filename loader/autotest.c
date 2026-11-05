@@ -25,6 +25,9 @@
 #include "cpu_offload.h"
 #include "scene_cpu.h"
 #include "log.h"
+#include "main.h"
+#include "so_util.h"
+#include "heap.h"
 
 #if AUTOTEST_ENABLE
 
@@ -33,6 +36,11 @@
 #endif
 #ifndef AUTOTEST_PLAY_S
 #define AUTOTEST_PLAY_S 120
+#endif
+/* Seconds into play to quicksave (CClientExoAppInternal::DoQuickSave, as the
+ * quicksave key does; it ignores its object); 0: never. */
+#ifndef AUTOTEST_QUICKSAVE_S
+#define AUTOTEST_QUICKSAVE_S 0
 #endif
 
 enum {
@@ -175,6 +183,19 @@ static void tick(uint64_t now) {
     break;
   case S_PLAY:
     play_pattern(now);
+#if AUTOTEST_QUICKSAVE_S
+    {
+      static int saved;
+      if (!saved && now - s_state_us > (uint64_t)AUTOTEST_QUICKSAVE_S * 1000000u) {
+        saved = 1;
+        void (*quicksave)(void *) =
+            (void (*)(void *))so_symbol(&kotor_mod, "_ZN21CClientExoAppInternal11DoQuickSaveEv");
+        heap_log_full("[autotest] before quicksave: ");
+        log_printf("[autotest] quicksave at %u s of play (%p)", (unsigned)AUTOTEST_QUICKSAVE_S, (void *)quicksave);
+        if (quicksave) quicksave(NULL);
+      }
+    }
+#endif
     if (now - s_state_us > (uint64_t)AUTOTEST_PLAY_S * 1000000u) {
       set_inject(0, 128, 128, 128, 128);
       log_printf("[autotest] DONE played=%d s frames=%u draws=%u",
