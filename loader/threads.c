@@ -113,6 +113,17 @@ void thread_layout_apply(int pinned) {
 
 int thread_layout_pinned(void) { return g_layout_pinned; }
 
+int thread_census_count(void) { return g_census_n < CENSUS_MAX ? g_census_n : CENSUS_MAX; }
+
+int thread_census_get(int i, SceUID *thid, const char **tag) {
+  if (i < 0 || i >= thread_census_count()) return 0;
+  census_t *c = &g_census[i];
+  if (!__atomic_load_n(&c->used, __ATOMIC_ACQUIRE)) return 0;
+  *thid = c->thid;
+  *tag = c->tag;
+  return 1;
+}
+
 static int core_of(const SceKernelThreadInfo *ti) {
   switch (ti->currentCpuAffinityMask & SCE_KERNEL_CPU_MASK_USER_ALL) {
     case SCE_KERNEL_CPU_MASK_USER_0: return 0;

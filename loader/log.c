@@ -118,7 +118,7 @@ static const char *const k_log_keep[] = {
   "fail", "FAIL", "error", "ERROR", "Error", "WARNING", "warning",
   "MISSING", "missing", "abort", "ABORT", "CRASH", "unresolved",
   "[DRAW_FRAME]", "[cull]", "[ailist]", "[cansee]", "[bloom]", "[ramfile]", "[glsf]", "[effects-low]", "[ini]", "[stall]", "[dxt]", "[music]", "[mipgen]", "[obbidx]", "[aibudget]", "[aithrottle]", "[aithread]", "[aslprobe]", "[aslw]", "[offload]", "[scene]", "[path]", "[autotest]", "[glw]", "[glw:prof]", "[pcprof]", "[roomab]", "[roomdist]", "[loadscreen]", "[gxmp]", "[touch]", "[events]", "[vsync]", "[vsync-ab]",
-  "[lang]", "[mods]", "[bootmenu]", "[fbattach]", "[cubeup]", "[glbuf]", "[snd-gap]", "[snd-phase]", "[snd-cap]", "[cpu]", "[thread]", "[fd]", "[mine]", "[script]", "[resolve]", "[plt]", "[menu]", "[leaf]", "[proc]", "[bigtrace]", "[mem]", "[gff]", "[aievents]",
+  "[lang]", "[mods]", "[bootmenu]", "[fbattach]", "[cubeup]", "[glbuf]", "[snd-gap]", "[snd-phase]", "[snd-cap]", "[cpu]", "[thread]", "[fd]", "[mine]", "[script]", "[resolve]", "[plt]", "[menu]", "[leaf]", "[proc]", "[bigtrace]", "[mem]", "[gff]", "[aievents]", "[aicensus]", "[nwvm]", "[ledger]", "[trace]",
 #if BIG_TRACE
   "[heap]",
 #endif

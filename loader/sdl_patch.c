@@ -48,6 +48,9 @@
 #include "proc_anim.h"
 #include "heap.h"
 #include "ai_events.h"
+#include "ai_census.h"
+#include "nwvm.h"
+void nwvm_verify_tick(void);
 #include "cansee_cache.h"
 #include "gl_state_filter.h"
 #include "so_util.h"
@@ -114,6 +117,9 @@ static void SDL_GL_SwapWindow_hook(SDL_Window *w) {
   proc_anim_on_swap();
   heap_mem_on_swap();
   ai_events_on_swap();
+  ai_census_on_swap();
+  nwvm_on_swap();
+  nwvm_verify_tick();
   plt_direct_on_swap();
   cansee_cache_on_swap();
 #if PC_PROF

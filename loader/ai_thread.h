@@ -10,4 +10,17 @@ void ai_thread_install(void);
  * run the AI, and logs a [aithread] line every 10 s. */
 void ai_thread_on_swap(void);
 
+/* For diagnostics: 1 on the AI worker; the worker's time spent waiting at
+ * gates since boot, in microseconds (BATTLE_LEDGER builds; 0 otherwise). */
+#include <stdint.h>
+int ai_thread_on_worker(void);
+uint64_t ai_thread_idle_us(void);
+/* Game thread: the time spent drawing the scene with the AI beside it, plus
+ * waiting for the AI after it, since boot (us). */
+uint64_t ai_thread_render_us(void);
+/* Game thread, inside the drawing, with no animation in progress (between two
+ * Gob::Animate calls, after ManageSceneBSP): makes the call the AI worker is
+ * waiting on, if any (AI_SERVE). */
+void ai_thread_safe_point(void);
+
 #endif

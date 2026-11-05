@@ -38,5 +38,9 @@ void glw_prof_install(void);
 void glw_prof_start(void);
 void glw_prof_set_worker(int thid);
 void glw_prof_report(unsigned frames, unsigned long long window_us);
+/* BATTLE_LEDGER: the sampled recording times since the last call (sum and
+ * count, in us), the timer's own cost (sum and count of back-to-back reads),
+ * and the commands recorded; then resets. */
+void glw_rec_stats(unsigned long long *sum, unsigned *n, unsigned long long *cal, unsigned *cal_n, unsigned *calls);
 
 #endif

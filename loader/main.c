@@ -50,6 +50,9 @@
 #include "proc_anim.h"
 #include "gff_grow.h"
 #include "ai_events.h"
+#include "ai_census.h"
+#include "nwvm.h"
+#include "battle_ledger.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -4960,6 +4963,9 @@ int main(int argc, char *argv[]) {
   proc_anim_install();
   gff_grow_install();
   ai_events_install();
+  ai_census_install();
+  nwvm_install();
+  battle_ledger_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
 #else

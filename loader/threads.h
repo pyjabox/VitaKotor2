@@ -70,5 +70,9 @@ int thread_layout_pinned(void);
 /* Log every recorded thread with a share of the last window: core, priority,
  * load, plus a per-core total. The first call only takes the baseline. */
 void thread_census_log(void);
+/* The recorded threads, for diagnostics (BATTLE_LEDGER): how many entries
+ * there are, and entry i's thread and tag (returns 0 for an unused entry). */
+int thread_census_count(void);
+int thread_census_get(int i, SceUID *thid, const char **tag);
 
 #endif

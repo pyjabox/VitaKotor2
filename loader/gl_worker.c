@@ -197,9 +197,46 @@ static uint32_t *ring_reserve(uint32_t n) {
   return R.ring + s_wr;
 }
 
+#if BATTLE_LEDGER
+/* BATTLE_LEDGER: one recorded command in 64 timed from glw_begin to the end of
+ * glw_end (publishing, and the GL worker's wake-up when a batch fills), and
+ * now and then two timer reads back to back, the timer's own cost. */
+static uint32_t s_rec_k, s_rec_n, s_rec_cal_n, s_rec_calls0;
+static uint64_t s_rec_t0, s_rec_sum, s_rec_cal;
+void glw_rec_stats(unsigned long long *sum, unsigned *n, unsigned long long *cal, unsigned *cal_n, unsigned *calls) {
+  *sum = s_rec_sum; *n = s_rec_n; *cal = s_rec_cal; *cal_n = s_rec_cal_n; *calls = s_rec_k - s_rec_calls0;
+  s_rec_sum = s_rec_cal = 0;
+  s_rec_n = s_rec_cal_n = 0;
+  s_rec_calls0 = s_rec_k;
+}
+#define REC_BEGIN()                                                              \
+  do {                                                                           \
+    if ((++s_rec_k & 63) == 0) {                                                 \
+      if ((s_rec_k & 4095) == 0) {                                               \
+        uint64_t a_ = sceKernelGetProcessTimeWide();                             \
+        s_rec_cal += sceKernelGetProcessTimeWide() - a_;                         \
+        s_rec_cal_n++;                                                           \
+      }                                                                          \
+      s_rec_t0 = sceKernelGetProcessTimeWide();                                  \
+    }                                                                            \
+  } while (0)
+#define REC_END()                                                                \
+  do {                                                                           \
+    if (s_rec_t0) {                                                              \
+      s_rec_sum += sceKernelGetProcessTimeWide() - s_rec_t0;                     \
+      s_rec_n++;                                                                 \
+      s_rec_t0 = 0;                                                              \
+    }                                                                            \
+  } while (0)
+#else
+#define REC_BEGIN() do {} while (0)
+#define REC_END() do {} while (0)
+#endif
+
 uint32_t *glw_begin(uint32_t op, uint32_t nargs, uint32_t data_bytes) {
   uint32_t n = 1 + nargs + (data_bytes + 3) / 4;
   if (foreign_thread()) return s_foreign + 1;
+  REC_BEGIN();
   uint32_t *c = glw_ro.mode == 2 ? ring_reserve(n) : s_scratch;
   c[0] = op | (n << 16);
   s_cur = c;
@@ -226,7 +263,7 @@ void glw_publish(void) {
 
 void glw_end(uint32_t *a) {
   if (a == s_foreign + 1) return;
-  if (glw_ro.mode == 2) { publish(); return; }
+  if (glw_ro.mode == 2) { publish(); REC_END(); return; }
   uint32_t ret;
   glw_ro.in_replay = 1;
   execute(s_cur, &ret);
@@ -237,6 +274,9 @@ void glw_end(uint32_t *a) {
 uint32_t glw_sync(uint32_t *a) {
   if (a == s_foreign + 1) return 0;
   uint32_t op = s_cur[0] & GLW_OP_MASK;
+#if BATTLE_LEDGER
+  s_rec_t0 = 0;                    /* a synchronous command: not sampled */
+#endif
   st_syncs++;
 #if ASLW
   if (op >= ASLW_OP_BASE) aslw_note_sync(op - ASLW_OP_BASE);

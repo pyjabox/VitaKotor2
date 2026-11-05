@@ -43,6 +43,7 @@
 #include "so_util.h"
 #include "log.h"
 #include "scene_cpu.h"
+#include "ai_thread.h"
 
 #if SCENE_CPU
 
@@ -245,6 +246,7 @@ static void note_model(void *gob, uint32_t us) {
 
 static void h_animate(void *gob, uint32_t dt) {
   if (!on_game_thread()) { o_animate(gob, dt); return; }
+  if (!s_anim_depth) ai_thread_safe_point();   /* no animation in progress: the AI's served call, if any */
   uint32_t lr = (uint32_t)((uintptr_t)__builtin_return_address(0) - kotor_mod.text_base);
   uint8_t *g = gob;
   uint8_t *scene = *(uint8_t **)(g + 0x94);
@@ -301,9 +303,19 @@ static void h_animate(void *gob, uint32_t dt) {
 static void (*o_bsp)(void *scene);
 static void h_bsp(void *scene) {
   if (!on_game_thread()) { o_bsp(scene); return; }
-  uint64_t t0 = now_us();
+  uint64_t t0 = SCENE_CPU_STATS ? now_us() : 0;
   o_bsp(scene);
-  w_bsp_us += now_us() - t0;
+  if (SCENE_CPU_STATS) w_bsp_us += now_us() - t0;
+  ai_thread_safe_point();                      /* 4-17 ms into the drawing; nothing animates here */
+}
+/* BSPTraverseVolumeApprox recurses through the PLT: safe points all through
+ * ManageSceneBSP's 4-17 ms, where the AI's served calls otherwise waited for
+ * its end (hardware: 4.5-15 ms a served call). It builds the frame's render
+ * lists, which a served call never touches. */
+static void (*o_bspvol)(void *, const void *, void *, void *, void *);
+static void h_bspvol(void *node, const void *v, void *planes, void *fn, void *arg) {
+  ai_thread_safe_point();
+  o_bspvol(node, v, planes, fn, arg);
 }
 static void (*o_buckets)(void *scene);
 static void h_buckets(void *scene) {
@@ -404,10 +416,17 @@ void scene_cpu_install(void) {
                                   (uintptr_t)h_setup, &n_setup);
   if (o_process_gob && s_holo && s_push && s_saber)
     o_animate = (animate_t)take_slots("_ZN3Gob7AnimateEf", (uintptr_t)h_animate, &n_anim);
-  if (SCENE_CPU_STATS) {
+  if (SCENE_CPU_STATS || AI_SERVE)
     o_bsp = (void (*)(void *))take_slots("_Z14ManageSceneBSPP5Scene", (uintptr_t)h_bsp, &n_bsp);
-    o_buckets = (void (*)(void *))take_slots("_ZN5Scene12DoGobBucketsEv", (uintptr_t)h_buckets, &n_buckets);
+  if (AI_SERVE) {
+    unsigned n_vol = 0;
+    o_bspvol = (void (*)(void *, const void *, void *, void *, void *))take_slots(
+        "_Z23BSPTraverseVolumeApproxP7BSPNodeRK6VectorR4ListI5PlaneEPFvS0_PvS7_ES8_", (uintptr_t)h_bspvol, &n_vol);
+    log_printf("[scene] safe points for the AI's served calls: ManageSceneBSP %u slots, BSPTraverseVolumeApprox %u",
+               n_bsp, n_vol);
   }
+  if (SCENE_CPU_STATS)
+    o_buckets = (void (*)(void *))take_slots("_ZN5Scene12DoGobBucketsEv", (uintptr_t)h_buckets, &n_buckets);
   s_on = 1;
   s_installed = 1;
   log_printf("[scene] armed: light setup %u slots, Gob::Animate %u (not-drawn gobs every %d frames)%s%s%s", n_setup,

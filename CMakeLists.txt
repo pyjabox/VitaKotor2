@@ -110,8 +110,16 @@ add_executable(KOTOR2
   loader/big_trace.c
   loader/gff_grow.c
   loader/ai_events.c
+  loader/ai_census.c
+  loader/nwvm.c
+  loader/nwvm_verify.c
+  loader/battle_ledger.c
   loader/log.c
 )
+
+# The NWScript interpreter's float operations must round exactly like the
+# engine's own (separate VFP multiplies and adds, never fused or contracted).
+set_source_files_properties(loader/nwvm.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 
 add_custom_command(TARGET KOTOR2 POST_BUILD
   COMMAND bash ${CMAKE_SOURCE_DIR}/tools/check_vitagl_build.sh

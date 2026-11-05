@@ -119,6 +119,52 @@
 #ifndef BIG_TRACE_MIN_KB
 #define BIG_TRACE_MIN_KB          1024
 #endif
+// The NWScript interpreter in C (loader/nwvm.c): nwvm_mode.txt 0 off, a
+// alternating with the engine's every 10 s (with NWVM_AB). NWVM_VERIFY (test
+// builds): generated programs through both at start (nwvm_verify.c).
+#ifndef NWVM
+#define NWVM                      1
+#endif
+#ifndef NWVM_DEFAULT
+#define NWVM_DEFAULT              '1'
+#endif
+#ifndef NWVM_AB
+#define NWVM_AB                   0
+#endif
+#ifndef NWVM_VERIFY
+#define NWVM_VERIFY               0
+#endif
+#ifndef NWVM_VERIFY_PROGRAMS
+#define NWVM_VERIFY_PROGRAMS      4000u
+#endif
+// Diagnostic: per creature, AIUpdates, attacks and combat changes every 10 s
+// ([aicensus] lines; ai_census.c).
+#ifndef AI_CENSUS
+#define AI_CENSUS                 0
+#endif
+// Diagnostic: where a busy fight's frame time goes, with timers ([ledger]
+// lines at the end of each AI-thread window; battle_ledger.c and ai_thread.c):
+// each AI pass's wall time split into CPU, waits at gates and time off the CPU,
+// filed by what the AI was doing when the drawing ended; scripts by name and
+// by what started them; events by type; parts of AIUpdate; the game thread's
+// main loops; the cost of recording a GL command. Build it with AI_CENSUS
+// (AIUpdates by AI level), AI_THREAD_DIAG (events) and SCENE_CPU_STATS.
+#ifndef BATTLE_LEDGER
+#define BATTLE_LEDGER             0
+#endif
+// Test builds with BATTLE_LEDGER: write NWScript bytecode to
+// ux0:data/kotor2/dump/<name>.ncs -- every script that runs (once), and the
+// names in dump_scripts.txt (one a line; a built-in list without it) -- plus
+// the engine's command table, actions.txt (command number, function).
+#ifndef SCRIPT_DUMP
+#define SCRIPT_DUMP               0
+#endif
+// Test builds with BATTLE_LEDGER: a scripted scene step by step ([trace]
+// lines; battle_ledger.c), built for the Khoonda retreat. Needs AI_THREAD_DIAG
+// for the fired events.
+#ifndef SCENE_TRACE
+#define SCENE_TRACE               0
+#endif
 // Diagnostic: the server's AI event queue, counted by type and caller every
 // 10 s ([aievents] lines; ai_events.c).
 #ifndef AI_EVENTS_DIAG
@@ -907,6 +953,61 @@
 // AI in the server loop and beside the drawing ([aithread] diag lines).
 // Test builds: ai_thread.c's battle gate rules (2026-11-04) on and off
 // alternately every 10 s.
+// The AI's budget beside the drawing grows with the drawing (ai_thread.c):
+// up to AI_BUDGET_DRAW_PCT of the last drawing, at most AI_BUDGET_MAX_US, never
+// under the engine's 10 ms. AI_BUDGET_SCALE_AB alternates it with the engine's
+// 10 ms every 10 s (hardware A/B).
+#ifndef AI_BUDGET_SCALE
+#define AI_BUDGET_SCALE           0
+#endif
+#ifndef AI_BUDGET_SCALE_AB
+#define AI_BUDGET_SCALE_AB        0
+#endif
+#define AI_BUDGET_DRAW_PCT        40u
+#define AI_BUDGET_MAX_US          40000u
+// The attack-animation calls (CSWSCreature::GetClientMelee/RangedAnimation,
+// from Resolve*Attack) served by the game thread at the drawing's next safe
+// point -- between two Gob::Animate calls, or after ManageSceneBSP -- instead of
+// waiting for the drawing's end (loader/ai_thread.c). Hardware, Khoonda battle
+// (2026-11-05): they stopped 25-39% of the AI passes ~5 ms in, and each such
+// pass made the game wait 20-46 ms after the drawing. AI_SERVE_DEFAULT '1' on.
+#ifndef AI_SERVE
+#define AI_SERVE                  1
+#endif
+#ifndef AI_SERVE_DEFAULT
+#define AI_SERVE_DEFAULT          '1'
+#endif
+// The AI budget beside the drawing, adapted pass by pass to the time the
+// drawing leaves: up while the AI's levels end before 60% of the drawing, down
+// when they end after 80% of it, from the engine's 10 ms up to
+// AI_BUDGET_ADAPT_MAX_PM/100 ms. Enemies in the Khoonda battle sit at AI level 2
+// and got ~0.4 turns a second at 8 FPS while the AI idled ~40 ms a frame beside
+// the drawing. AI_BUDGET_ADAPT_DEFAULT '1' on.
+#ifndef AI_BUDGET_ADAPT
+#define AI_BUDGET_ADAPT           1
+#endif
+#ifndef AI_BUDGET_ADAPT_DEFAULT
+#define AI_BUDGET_ADAPT_DEFAULT   '1'
+#endif
+#define AI_BUDGET_ADAPT_MAX_PM    6000u
+// Fair AI levels beside the drawing (loader/ai_thread.c). The engine's
+// UpdateState (libkotor2 0x4a7dc4) ends an AI level as soon as any AI event is
+// due after an AIUpdate, and charges the events it dispatches at a level's top
+// to that level's share of the budget. In a battle every enemy turn queues
+// shouts, so level 2 (enemies in combat) ended after 1-2 creatures whatever
+// the budget. Levels 4-1 go on past a due event (the next iteration dispatches
+// it first, as the engine's next level would), and event time stays off the
+// levels' budget clock. AI_LEVEL_FAIR_DEFAULT '1' on.
+#ifndef AI_LEVEL_FAIR
+#define AI_LEVEL_FAIR             1
+#endif
+#ifndef AI_LEVEL_FAIR_DEFAULT
+#define AI_LEVEL_FAIR_DEFAULT     '1'
+#endif
+// Test builds: the AI levers off (BASE) and on (LEVERS) in turn, 10 s each.
+#ifndef AI_LEVERS_AB
+#define AI_LEVERS_AB              0
+#endif
 #ifndef AI_GATES_AB
 #define AI_GATES_AB               0
 #endif
