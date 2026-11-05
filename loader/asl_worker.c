@@ -55,7 +55,13 @@ enum { OP_GLOBALS = 0, OP_ARR_SET, OP_ARR_RESTORE, OP_DRAW_E_CLIENT, OP_NOP, OP_
 static int s_installed, s_mode, s_ab, s_ab_on = 1, s_filter = 1;
 static uint64_t w_t0, w_prev, w_frame_us;
 static uint32_t w_frames, w_drop, w_answer, w_sync_q, w_globals, w_arr_draws, w_arr_bytes, w_sync_draws,
-    w_verify, w_mismatch, w_unknown_px;
+    w_verify, w_mismatch, w_unknown_px, w_arr_shared;
+#ifndef ASLW_ARR_VERIFY
+#define ASLW_ARR_VERIFY 0
+#endif
+#if ASLW_ARR_VERIFY
+static uint32_t w_arr_ver_n, w_arr_ver_bad;
+#endif
 static uint32_t w_sync_by[512];
 static struct { uint16_t fn; uint32_t pname, n; } w_q[24];
 
@@ -794,6 +800,63 @@ static int arr_snapshot(uint32_t first, uint32_t count) {
   }
   if (!s_snap_n) return 0;
   if (!count) { s_snap_n = 0; return 0; }
+  /* Interleaved arrays (one stride, all within one vertex of the first, every
+   * offset a multiple of 4 from a 4-aligned start): one copy of the vertices
+   * they share instead of one per array (the engine's particles: position,
+   * colour and texture coordinates in one 24-byte vertex, copied 3 times). The
+   * worker places each array at payload + r[6] words - r[7] bytes; the copy
+   * starts at vertex first of the span, so r[7] = first * stride + (span start
+   * - the array's pointer) puts vertex v of each array where it was. */
+  if (s_snap_n > 1) {
+    const carr_t *c0 = &m_arr[s_snap_idx[0]];
+    uint32_t eff = arr_eff(c0);
+    uintptr_t lo = (uintptr_t)c0->ptr, hi = lo;
+    int ok = eff && (eff & 3u) == 0;
+    for (int j = 0; ok && j < s_snap_n; j++) {
+      const carr_t *c = &m_arr[s_snap_idx[j]];
+      uintptr_t p = (uintptr_t)c->ptr;
+      if (arr_eff(c) != eff) ok = 0;
+      if (p < lo) lo = p;
+      if (p + c->size * aslw_type_size(c->type) > hi) hi = p + c->size * aslw_type_size(c->type);
+    }
+    if (ok && hi - lo <= eff && (lo & 3u) == 0) {
+      for (int j = 0; ok && j < s_snap_n; j++) ok = (((uintptr_t)m_arr[s_snap_idx[j]].ptr - lo) & 3u) == 0;
+      uint32_t span = (count - 1) * eff + (uint32_t)(hi - lo);   /* vertex first's start to the last one's end */
+      if (ok && span + 3 <= ASLW_INLINE_MAX && span < bytes) {
+        uint32_t nw = 3 + 8u * (uint32_t)s_snap_n;
+        uint32_t *a = glw_begin(ASLW_OP_CUSTOM + OP_ARR_SET, nw, (span + 3) & ~3u);
+        a[0] = (uint32_t)s_snap_n;
+        a[1] = m_client_known ? m_client_active : 0;
+        a[2] = m_array_buf;
+        for (int j = 0; j < s_snap_n; j++) {
+          const carr_t *c = &m_arr[s_snap_idx[j]];
+          uint32_t *r = a + 3 + 8 * j;
+          r[0] = (uint32_t)s_snap_idx[j]; r[1] = (uint32_t)c->fn; r[2] = c->size; r[3] = c->type; r[4] = c->stride;
+          r[5] = c->norm; r[6] = nw; r[7] = first * eff + (uint32_t)(lo - (uintptr_t)c->ptr);
+        }
+        memcpy(a + nw, (const uint8_t *)lo + (size_t)first * eff, span);
+#if ASLW_ARR_VERIFY
+        /* Test builds: each array where the worker will place it (its formula),
+         * vertex by vertex, against the game's memory. */
+        for (int j = 0; j < s_snap_n; j++) {
+          const carr_t *c = &m_arr[s_snap_idx[j]];
+          const uint32_t *r = a + 3 + 8 * j;
+          const uint8_t *wp = (const uint8_t *)(a + r[6]) - r[7];
+          uint32_t asz = c->size * aslw_type_size(c->type);
+          for (uint32_t v = first; v < first + count; v++) {
+            if (memcmp(wp + (size_t)v * eff, (const uint8_t *)c->ptr + (size_t)v * eff, asz)) { w_arr_ver_bad++; break; }
+          }
+          w_arr_ver_n++;
+        }
+#endif
+        glw_end(a);
+        w_arr_draws++;
+        w_arr_bytes += (span + 3) & ~3u;
+        w_arr_shared++;
+        return s_snap_n;
+      }
+    }
+  }
   if (bytes > ASLW_INLINE_MAX) { s_snap_n = 0; return -1; }
   uint32_t nw = 3 + 8u * (uint32_t)s_snap_n;
   uint32_t *a = glw_begin(ASLW_OP_CUSTOM + OP_ARR_SET, nw, bytes);
@@ -1034,14 +1097,20 @@ void aslw_on_swap(void) {
     m += snprintf(qs + m, sizeof qs - (size_t)m, " %s(0x%x):%.2f", aslw_fns[w_q[i].fn].name,
                   (unsigned)w_q[i].pname, (double)w_q[i].n / f);
   log_printf("[aslw] %s%u frames, %.1f ms | answered %.1f a frame, asked the worker %.2f; dropped repeats %.0f; "
-             "globals sent %.2f; client-array draws %.2f (%.0f bytes), waited-for draws %.2f, uploads of unknown layout %u%s",
+             "globals sent %.2f; client-array draws %.2f (%.0f bytes, %.2f with one copy of interleaved arrays), waited-for draws %.2f, "
+             "uploads of unknown layout %u%s",
              s_ab ? (aslw_direct_flag ? "OFF " : "ON ") : "", (unsigned)w_frames,
              w_frames ? (double)w_frame_us / w_frames / 1000.0 : 0.0, (double)w_answer / f, (double)w_sync_q / f,
              (double)w_drop / f, (double)w_globals / f, (double)w_arr_draws / f, (double)w_arr_bytes / f,
-             (double)w_sync_draws / f, (unsigned)w_unknown_px, ASLW_VERIFY ? "" : "");
+             (double)w_arr_shared / f, (double)w_sync_draws / f, (unsigned)w_unknown_px, ASLW_VERIFY ? "" : "");
   if (n || m) log_printf("[aslw] waits a frame:%s | queries asked:%s", n ? syncs : " none", m ? qs : " none");
 #if ASLW_VERIFY
   log_printf("[aslw] VERIFY: %u answers checked, %u disagreed", (unsigned)w_verify, (unsigned)w_mismatch);
+#endif
+#if ASLW_ARR_VERIFY
+  log_printf("[aslw] ARR VERIFY: %u arrays in one copy checked vertex by vertex, %u differed", (unsigned)w_arr_ver_n,
+             (unsigned)w_arr_ver_bad);
+  w_arr_ver_n = w_arr_ver_bad = 0;
 #endif
   memset(w_sync_by, 0, sizeof w_sync_by);
   memset(w_q, 0, sizeof w_q);
@@ -1049,6 +1118,7 @@ void aslw_on_swap(void) {
   w_frame_us = 0;
   w_drop = w_answer = w_sync_q = w_globals = w_arr_draws = w_arr_bytes = w_sync_draws = w_verify = w_mismatch = 0;
   w_unknown_px = 0;
+  w_arr_shared = 0;
   w_t0 = now;
   if (s_ab) {
     s_ab_on = !s_ab_on;

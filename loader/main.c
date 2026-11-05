@@ -53,6 +53,7 @@
 #include "ai_census.h"
 #include "nwvm.h"
 #include "battle_ledger.h"
+#include "part_collide.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -4966,6 +4967,7 @@ int main(int argc, char *argv[]) {
   ai_census_install();
   nwvm_install();
   battle_ledger_install();
+  part_collide_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
 #else

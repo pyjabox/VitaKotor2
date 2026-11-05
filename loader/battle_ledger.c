@@ -41,6 +41,7 @@
 #include "ai_thread.h"
 #include "gl_worker.h"
 #include "battle_ledger.h"
+#include "nwvm.h"
 
 #if BATTLE_LEDGER
 
@@ -160,6 +161,7 @@ static int s_game_depth;
 typedef int (*runscript_t)(void *vm, void *name, uint32_t oid, int a);
 static runscript_t o_runscript;
 static int h_runscript(void *vm, void *name, uint32_t oid, int a) {
+  if (nwvm_dialogue_skip(name, oid, (uintptr_t)__builtin_return_address(0))) return 1;
   if (!ai_thread_on_worker()) return o_runscript(vm, name, oid, a);
   int si = site_of((uintptr_t)__builtin_return_address(0));
   if (s_rs_depth < NEST) s_rs_site[s_rs_depth] = si;

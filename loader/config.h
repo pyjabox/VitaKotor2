@@ -131,6 +131,25 @@
 #ifndef NWVM_AB
 #define NWVM_AB                   0
 #endif
+// Skip OnDialogue runs (k_def_dialogue01 -> k_ai_master) that provably do
+// nothing: every listener of every battle shout ran the whole AI script
+// (loader/nwvm.c). dialogue_mode.txt 0 turns it off.
+// Particles' collision tests: BoxIntersect's two quick answers inline, exactly
+// as the engine computes them (loader/part_collide.c). PART_COLLIDE_STATS
+// (diagnostics; on with BATTLE_LEDGER): [partcol] counts and the particles'
+// HitCheck time.
+#ifndef PART_COLLIDE
+#define PART_COLLIDE              1
+#endif
+#ifndef PART_COLLIDE_STATS
+#define PART_COLLIDE_STATS        BATTLE_LEDGER
+#endif
+#ifndef PART_COLLIDE_VERIFY
+#define PART_COLLIDE_VERIFY       0
+#endif
+#ifndef NWVM_DIALOGUE_SKIP
+#define NWVM_DIALOGUE_SKIP        1
+#endif
 #ifndef NWVM_VERIFY
 #define NWVM_VERIFY               0
 #endif

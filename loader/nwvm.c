@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "config.h"
 #include "main.h"
@@ -36,6 +37,7 @@
 #include "log.h"
 #include "dynlib.h"
 #include "nwvm.h"
+#include "script_cache.h"
 
 #if NWVM
 
@@ -335,11 +337,100 @@ static void snap_check(void *vm) {
                (unsigned)e->nslots, (unsigned)e->insns);
 }
 
+/* ---- OnDialogue runs that do nothing (NWVM_DIALOGUE_SKIP) -------------------------
+ * A creature hears every shout in range: CSWSCreature::EventHandler stores the
+ * shout's listen pattern at creature+0x1bc (0x476de2) and runs its OnDialogue
+ * script (RunScript, returning to 0x476f16; the result is not used). For
+ * ordinary creatures that is k_def_dialogue01, which only ExecuteScripts
+ * k_ai_master with 1004. Read in their bytecode (2026-11-05), k_ai_master's
+ * 1004 handler (0x19d1-0x1e7c) and GN_RespondToShout (0x1cf8c) change nothing
+ * unless one of these holds:
+ *  - the pattern is -1 (a real conversation) or 1 (the only one
+ *    GN_RespondToShout acts on: the branch for 15 sits inside its `== 1`);
+ *  - local boolean 97 (OnDialogue user event at the start), 26 (at the end)
+ *    or 86 (ClearAllActions when the shout is refused) is set.
+ * Everything else on those paths is getters, and debug prints that ShipBuild
+ * (always 1) turns off. In the battle the round-end shouts (15) made ~30
+ * listeners a frame run all of it (7-17 ms a frame on hardware). Those runs
+ * are skipped -- only for these two scripts byte for byte (sizes and FNV-1a
+ * of the dumped code, checked against the code the VM runs, again whenever
+ * the script cache empties), and only while the script cache is on (so the
+ * check is once per buffer). A creature's CSWVarTable is at +0x114, as the
+ * engine's own callers of GetLocalBoolean use it. dialogue_mode.txt 0: off. */
+#define KAM_SIZE 121624
+#define KAM_FNV 0x6a2cbe60u
+#define KDD_SIZE 722
+#define KDD_FNV 0x75b3875eu
+#define ONDIALOGUE_RET 0x476f16u
+static int s_dlg_on;
+static uintptr_t s_app_mgr, s_vt_creature;
+static void *(*f_get_obj)(void *app, uint32_t oid);
+static int (*f_get_bool)(void *vartable, int n);
+typedef struct { const uint8_t *buf; uint32_t gen; int good; } fp_t;   /* gen: cache generation + 1 when checked */
+static fp_t s_fp_kam, s_fp_kdd;
+static uint32_t w_dlg_runs, w_dlg_skipped, s_fp_logged;
+
+static uint32_t fnv1a(const uint8_t *p, int n) {
+  uint32_t h = 2166136261u;
+  for (int i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u;
+  return h;
+}
+static void fp_check(fp_t *f, const char *nm, const uint8_t *code, int size, int want_size, uint32_t want_fnv) {
+  uint32_t gen = script_cache_generation() + 1;
+  if (f->buf == code && f->gen == gen) return;
+  f->buf = code;
+  f->gen = gen;
+  f->good = size == want_size && fnv1a(code, size) == want_fnv;
+  if (s_fp_logged++ < 6)
+    log_printf("[nwvm] %s is %s the script the OnDialogue skip was checked against (%d bytes)", nm,
+               f->good ? "" : "NOT", size);
+}
+/* At a script's start: its fingerprint, if it is one of the two. */
+static void fp_seen(void *vm, const uint8_t *code, int size) {
+  if (!s_dlg_on || script_cache_phase() != 1) return;
+  int32_t d = VMI(vm, VM_DEPTH);
+  if (d < 0 || d >= 8) return;
+  const char *nm = *(const char **)((uint8_t *)vm + 0x2c + d * 40 + 24);
+  if (!nm) return;
+  if (!strcasecmp(nm, "k_ai_master")) fp_check(&s_fp_kam, "k_ai_master", code, size, KAM_SIZE, KAM_FNV);
+  else if (!strcasecmp(nm, "k_def_dialogue01")) fp_check(&s_fp_kdd, "k_def_dialogue01", code, size, KDD_SIZE, KDD_FNV);
+}
+
+int nwvm_dialogue_skip(const void *name, uint32_t oid, uintptr_t ret) {
+  if (!s_dlg_on || !s_on || ((ret & ~(uintptr_t)1) - kotor_mod.text_base) != ONDIALOGUE_RET) return 0;
+  const char *n = name ? *(const char *const *)name : NULL;
+  if (!n || strcasecmp(n, "k_def_dialogue01")) return 0;
+  w_dlg_runs++;
+  uint32_t gen = script_cache_generation() + 1;
+  if (script_cache_phase() != 1 || !s_fp_kam.good || s_fp_kam.gen != gen || !s_fp_kdd.good || s_fp_kdd.gen != gen)
+    return 0;
+  void *am = *(void **)s_app_mgr;
+  void *app = am ? *(void **)((uint8_t *)am + 8) : NULL;
+  uint8_t *o = app ? (uint8_t *)f_get_obj(app, oid) : NULL;
+  if (!o || *(uintptr_t *)o != s_vt_creature) return 0;
+  int32_t pattern = *(int32_t *)(o + 0x1bc);
+  if (pattern == -1 || pattern == 1) return 0;
+  void *vars = o + 0x114;
+  if (f_get_bool(vars, 97) || f_get_bool(vars, 26) || f_get_bool(vars, 86)) return 0;
+  w_dlg_skipped++;
+  return 1;
+}
+
+#if !BATTLE_LEDGER                    /* BATTLE_LEDGER builds take RunScript's slot and ask nwvm_dialogue_skip */
+typedef int (*runscript_t)(void *vm, void *name, uint32_t oid, int a);
+static runscript_t o_runscript;
+static int h_runscript(void *vm, void *name, uint32_t oid, int a) {
+  if (nwvm_dialogue_skip(name, oid, (uintptr_t)__builtin_return_address(0))) return 1;
+  return o_runscript(vm, name, oid, a);
+}
+#endif
+
 /* ---- the loop ------------------------------------------------------------------ */
 static int nw_exec(void *vm, int *pip, char *code_c, int size) {
   const uint8_t *code = (const uint8_t *)code_c;
   vmstack_t *s = STK(vm);
   w_calls++;
+  if (*pip == 0) fp_seen(vm, code, size);
   for (;;) {
     int32_t ip = *pip;
     if (ip == 8) {
@@ -731,6 +822,27 @@ void nwvm_install(void) {
   if (!o_exec) { log_printf("[nwvm] NOT armed: ExecuteCode's slot is taken"); return; }
   s_on = 1;
   log_printf("[nwvm] armed: scripts run in our interpreter%s", m == 'a' ? " (A/B every 10 s)" : "");
+#if NWVM_DIALOGUE_SKIP
+  {
+    char dm = '1';
+    SceUID f2 = sceIoOpen(DATA_PATH "/dialogue_mode.txt", SCE_O_RDONLY, 0);
+    if (f2 >= 0) { char ch = 0; if (sceIoRead(f2, &ch, 1) == 1) dm = ch; sceIoClose(f2); }
+    s_app_mgr = so_symbol(&kotor_mod, "g_pAppManager");
+    f_get_obj = (void *(*)(void *, uint32_t))so_symbol(&kotor_mod, "_ZN13CServerExoApp13GetGameObjectEm");
+    f_get_bool = (int (*)(void *, int))so_symbol(&kotor_mod, "_ZN11CSWVarTable15GetLocalBooleanEi");
+    uintptr_t vt = so_symbol(&kotor_mod, "_ZTV12CSWSCreature");
+    s_vt_creature = vt ? vt + 8 : 0;
+    int ok = dm != '0' && s_app_mgr && f_get_obj && f_get_bool && s_vt_creature;
+#if !BATTLE_LEDGER
+    if (ok) {
+      o_runscript = (runscript_t)take_slots("_ZN15CVirtualMachine9RunScriptEP10CExoStringmi", (uintptr_t)h_runscript);
+      ok = o_runscript != NULL;
+    }
+#endif
+    s_dlg_on = ok;
+    log_printf("[nwvm] OnDialogue runs that do nothing: %s", ok ? "skipped" : dm == '0' ? "run (dialogue_mode 0)" : "run (not armed)");
+  }
+#endif
   if (m == 'a') s_on = 2;
 }
 
@@ -747,6 +859,10 @@ static void report(void) {
              (unsigned)(w_insns / f), (unsigned)(w_snap_used / f), (unsigned)(w_snap_insns / f));
   w_calls = w_insns = 0;
   w_snap_used = w_snap_insns = 0;
+  if (s_dlg_on)
+    log_printf("[nwvm] OnDialogue (k_def_dialogue01): %.1f runs a frame, %.1f skipped as doing nothing",
+               (double)w_dlg_runs / f, (double)w_dlg_skipped / f);
+  w_dlg_runs = w_dlg_skipped = 0;
   s_frames = 0;
 }
 
@@ -776,6 +892,7 @@ void nwvm_on_swap(void) {
 #else
 void nwvm_install(void) {}
 void nwvm_on_swap(void) {}
+int nwvm_dialogue_skip(const void *name, uint32_t oid, uintptr_t ret) { (void)name; (void)oid; (void)ret; return 0; }
 int nwvm_phase_ours(void) { return 0; }
 void nwvm_ab_window_end(void) {}
 #endif

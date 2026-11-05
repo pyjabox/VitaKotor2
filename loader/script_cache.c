@@ -156,7 +156,13 @@ static ent_t *find(const uint8_t *key) {           /* caller holds the lock */
   return NULL;
 }
 
+/* Bumped whenever the cache empties: what a script name gives may differ
+ * from then on (nwvm.c's script fingerprints are valid for one generation). */
+static volatile uint32_t s_gen;
+uint32_t script_cache_generation(void) { return s_gen; }
+
 static void clear_all(void) {                       /* caller holds the lock */
+  s_gen++;
   for (int i = 0; i < SLOTS; i++)
     if (s_ent[i].code) {
       if (s_nretired < RETIRED_MAX) s_retired[s_nretired++] = s_ent[i].code;   /* else leaked: never freed early */
@@ -397,4 +403,5 @@ void script_cache_install(void) {
 void script_cache_install(void) {}
 void script_cache_on_swap(void) {}
 int script_cache_phase(void) { return -1; }
+uint32_t script_cache_generation(void) { return 0; }
 #endif
