@@ -147,6 +147,15 @@
 #ifndef PART_COLLIDE_VERIFY
 #define PART_COLLIDE_VERIFY       0
 #endif
+// Animation key search, FindAnimation and C2DA::GetColumnIndex answered
+// faster with the engine's answers (loader/anim_fast.c). ANIM_FAST_VERIFY (test
+// builds): each answer checked against the engine's own.
+#ifndef ANIM_FAST
+#define ANIM_FAST                 1
+#endif
+#ifndef ANIM_FAST_VERIFY
+#define ANIM_FAST_VERIFY          0
+#endif
 #ifndef NWVM_DIALOGUE_SKIP
 #define NWVM_DIALOGUE_SKIP        1
 #endif
@@ -861,6 +870,18 @@
 #endif
 #ifndef SCENE_CPU_VERIFY
 #define SCENE_CPU_VERIFY          0
+#endif
+#ifndef ANIM_LOD_FAR_N
+#define ANIM_LOD_FAR_N            2
+#endif
+#ifndef ANIM_FAR_M_DEFAULT
+#define ANIM_FAR_M_DEFAULT        20.0f
+#endif
+#ifndef ANIM_DEPTH_DIST1
+#define ANIM_DEPTH_DIST1          6.0f
+#endif
+#ifndef ANIM_DEPTH_DIST2
+#define ANIM_DEPTH_DIST2          15.0f
 #endif
 #ifndef ANIM_LOD_N
 #define ANIM_LOD_N                3

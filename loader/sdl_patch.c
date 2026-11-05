@@ -50,6 +50,7 @@
 #include "ai_events.h"
 #include "ai_census.h"
 #include "part_collide.h"
+#include "anim_fast.h"
 #include "nwvm.h"
 void nwvm_verify_tick(void);
 #include "cansee_cache.h"
@@ -120,6 +121,7 @@ static void SDL_GL_SwapWindow_hook(SDL_Window *w) {
   ai_events_on_swap();
   ai_census_on_swap();
   part_collide_on_swap();
+  anim_fast_on_swap();
   nwvm_on_swap();
   nwvm_verify_tick();
   plt_direct_on_swap();

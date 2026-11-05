@@ -54,6 +54,7 @@
 #include "nwvm.h"
 #include "battle_ledger.h"
 #include "part_collide.h"
+#include "anim_fast.h"
 #include "dxt_native.h"
 #include "mip_gpu.h"
 #include "pc_prof.h"
@@ -4968,6 +4969,7 @@ int main(int argc, char *argv[]) {
   nwvm_install();
   battle_ledger_install();
   part_collide_install();
+  anim_fast_install();
 #if ASLW
   aslw_install();                 /* takes every ASLgl slot: the probe would only count the worker */
 #else

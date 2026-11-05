@@ -141,6 +141,8 @@ void aslw_gen_glEnd(void);
 void aslw_gen_glCallLists(uint32_t, uint32_t, uintptr_t);
 void aslw_gen_glBindProgramARB(uint32_t, uint32_t);
 void aslw_gen_glNewList(uint32_t, uint32_t);
+void aslw_gen_glProgramEnvParameter4fARB(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+void aslw_gen_glProgramEnvParameter4fvARB(uint32_t, uint32_t, uintptr_t);
 void aslw_gen_glPixelStorei(uint32_t, uint32_t);
 void aslw_gen_glEndList(void);
 
@@ -263,11 +265,18 @@ static uint8_t m_bufs_known;
 
 /* State the engine's calls did not set: the loader drew by itself, or a
  * display list ran. Read from the worker on the next query, then kept. */
+/* Vertex program constants (glProgramEnvParameter4fARB on GL_VERTEX_PROGRAM_ARB)
+ * as last recorded, by index; see the wrappers below. */
+static uint32_t m_env[96][4];
+static uint8_t m_env_known[96];
+static uint32_t w_env_calls, w_env_dropped;
+
 void aslw_forget(void) {
   m_ncap = 0;
   m_nlearn = 0;
   m_vp_known = m_blend_known = m_color_known = 0;
   memset(m_tex2d_known, 0, sizeof m_tex2d_known);
+  memset(m_env_known, 0, sizeof m_env_known);
 }
 
 static int unit_cap(uint32_t cap) {
@@ -457,6 +466,40 @@ void aslw_custom_glColor4fv(uintptr_t p) {
     color4(c[0], c[1], c[2], c[3]);
   }
   aslw_gen_glColor4fv(p);
+}
+
+/* ---- vertex program constants --------------------------------------------------
+ * ASLgl::glProgramEnvParameter4fARB (libkotor2 0x2bc6e8) only stores the four
+ * values for GL_VERTEX_PROGRAM_ARB: bone matrices at 18-68 (s_boneMatrix),
+ * lights at 73-87 (s_lightData), light material at 93-95
+ * (s_lightMaterialData); 89-92 (s_cameraMatrix) also count a change, and the
+ * rest is ignored. Nothing else writes those slots (every reference to the
+ * three arrays in libkotor2: the setter, ASLgl_InitKotor2 at start, and
+ * GlesKotorSetupShader, which reads them and writes material slot 96, outside
+ * the setter's range). The engine sends them again for every skinned draw
+ * (3 per bone) and every program enable (~25), most unchanged. A call whose
+ * four values are bit for bit the last recorded at that index stores nothing
+ * new and is not recorded. An index is forgotten when a value reaches it some
+ * other way: the fv form, ASLgl's own nested calls or direct calls, a display
+ * list run (aslw_forget). Compiled into a list: neither tracked nor dropped. */
+static inline int env_tracked(uint32_t i) { return (i >= 18 && i <= 68) || (i >= 73 && i <= 87) || (i >= 93 && i <= 95); }
+void aslw_custom_glProgramEnvParameter4fARB(uint32_t t, uint32_t i, uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+  if (t == 0x8620 && i < 96 && !m_compiling) {
+    if (engine() && env_tracked(i)) {
+      uint32_t *e = m_env[i];
+      w_env_calls++;
+      if (m_env_known[i] && e[0] == x && e[1] == y && e[2] == z && e[3] == w) { w_env_dropped++; return; }
+      e[0] = x; e[1] = y; e[2] = z; e[3] = w;
+      m_env_known[i] = 1;
+    } else {
+      m_env_known[i] = 0;
+    }
+  }
+  aslw_gen_glProgramEnvParameter4fARB(t, i, x, y, z, w);
+}
+void aslw_custom_glProgramEnvParameter4fvARB(uint32_t t, uint32_t i, uintptr_t v) {
+  if (t == 0x8620 && i < 96 && !m_compiling) m_env_known[i] = 0;
+  aslw_gen_glProgramEnvParameter4fvARB(t, i, v);
 }
 
 /* ---- display lists ------------------------------------------------------------- */
@@ -1098,11 +1141,12 @@ void aslw_on_swap(void) {
                   (unsigned)w_q[i].pname, (double)w_q[i].n / f);
   log_printf("[aslw] %s%u frames, %.1f ms | answered %.1f a frame, asked the worker %.2f; dropped repeats %.0f; "
              "globals sent %.2f; client-array draws %.2f (%.0f bytes, %.2f with one copy of interleaved arrays), waited-for draws %.2f, "
-             "uploads of unknown layout %u%s",
+             "uploads of unknown layout %u; vertex program constants %.0f a frame, %.0f unchanged and dropped%s",
              s_ab ? (aslw_direct_flag ? "OFF " : "ON ") : "", (unsigned)w_frames,
              w_frames ? (double)w_frame_us / w_frames / 1000.0 : 0.0, (double)w_answer / f, (double)w_sync_q / f,
              (double)w_drop / f, (double)w_globals / f, (double)w_arr_draws / f, (double)w_arr_bytes / f,
-             (double)w_arr_shared / f, (double)w_sync_draws / f, (unsigned)w_unknown_px, ASLW_VERIFY ? "" : "");
+             (double)w_arr_shared / f, (double)w_sync_draws / f, (unsigned)w_unknown_px, (double)w_env_calls / f,
+             (double)w_env_dropped / f, ASLW_VERIFY ? "" : "");
   if (n || m) log_printf("[aslw] waits a frame:%s | queries asked:%s", n ? syncs : " none", m ? qs : " none");
 #if ASLW_VERIFY
   log_printf("[aslw] VERIFY: %u answers checked, %u disagreed", (unsigned)w_verify, (unsigned)w_mismatch);
@@ -1119,6 +1163,7 @@ void aslw_on_swap(void) {
   w_drop = w_answer = w_sync_q = w_globals = w_arr_draws = w_arr_bytes = w_sync_draws = w_verify = w_mismatch = 0;
   w_unknown_px = 0;
   w_arr_shared = 0;
+  w_env_calls = w_env_dropped = 0;
   w_t0 = now;
   if (s_ab) {
     s_ab_on = !s_ab_on;

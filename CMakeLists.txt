@@ -115,6 +115,7 @@ add_executable(KOTOR2
   loader/nwvm_verify.c
   loader/battle_ledger.c
   loader/part_collide.c
+  loader/anim_fast.c
   loader/log.c
 )
 

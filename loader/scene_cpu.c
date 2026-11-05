@@ -182,6 +182,25 @@ static const char *(*o_model_name)(void *gob);
 static list_t *s_holo, *s_push, *s_saber;     /* buckets drawn after DoGobBuckets */
 #define SITE_BEFORE 0x537d25u                  /* DoGobBuckets: the gobs about to be drawn */
 #define SITE_AFTER 0x537f51u                   /* DoGobBuckets: every other gob */
+#define SITE_SCENE 0x53a963u                   /* Scene::Animate's third loop (gob+0x16 clear), before the drawing */
+/* The view's camera position, at +0x30 of the view block PartOutside reads
+ * (libkotor2 0x8e34a0, not exported; set before the drawing). */
+#define VIEW_CAM 0x8e34a0u
+/* Trade-offs the user chose (2026-11-05), each with its switch:
+ *  - anim_offscreen.txt 0 turns off: Scene::Animate's gobs that are out of the
+ *    view volume (Gob vtable +0x1cc, the test Gob::Animate makes itself) are
+ *    animated one frame in ANIM_LOD_N like the after-draw ones (9 ms a frame in
+ *    the battle, effect and projectile gobs mostly);
+ *  - anim_far.txt (metres, 0 off; ANIM_FAR_M_DEFAULT): drawn gobs farther
+ *    from the camera are animated one frame in ANIM_LOD_FAR_N;
+ *  - anim_depth.txt 0 turns off: the engine's own animation-detail distances
+ *    (animdepthdist1/2, 12 and 30 m scaled by size) set to ANIM_DEPTH_DIST1/2,
+ *    so distant characters' fingers and faces stop moving sooner.
+ * Their animation events (footsteps, hit sounds) fire up to a frame or two late. */
+static int s_lod_offscreen = 1;
+static float s_far_m = ANIM_FAR_M_DEFAULT;
+static uint32_t w_lod_off, w_lod_far, w_far_seen;
+static float w_near_m = 1e9f, w_far_max_m;
 
 static int in_list(list_t *l, void *p) {
   if (!l || !l->data) return 0;
@@ -244,6 +263,27 @@ static void note_model(void *gob, uint32_t us) {
   if (free_i >= 0) { w_model[free_i].name = n; w_model[free_i].calls = 1; w_model[free_i].us = us; }
 }
 
+/* One frame in n: 1 when this is not the gob's frame (processed, stamped, its
+ * time kept), else 0 with dt carrying the time owed. */
+static int lod_step(void *gob, uint8_t *g, uint8_t *scene, uint32_t *dt, uint32_t n) {
+  lod_t *e = lod_slot(gob);
+  if (!e) return 0;
+  float d;
+  memcpy(&d, dt, 4);
+  uint32_t phase = ((uint32_t)(uintptr_t)gob >> 4) + s_frame;
+  e->frame = s_frame;
+  if (phase % n) {
+    e->acc += d;
+    o_process_gob(gob);
+    *(uint32_t *)(g + 0x1b8) = *(uint32_t *)(scene + 0x50);
+    return 1;
+  }
+  d += e->acc;
+  e->acc = 0;
+  memcpy(dt, &d, 4);
+  return 0;
+}
+
 static void h_animate(void *gob, uint32_t dt) {
   if (!on_game_thread()) { o_animate(gob, dt); return; }
   if (!s_anim_depth) ai_thread_safe_point();   /* no animation in progress: the AI's served call, if any */
@@ -251,27 +291,35 @@ static void h_animate(void *gob, uint32_t dt) {
   uint8_t *g = gob;
   uint8_t *scene = *(uint8_t **)(g + 0x94);
   int real = !scene || *(uint32_t *)(g + 0x1b8) != *(uint32_t *)(scene + 0x50);
-  int excl = lr == SITE_AFTER && real && scene ? lod_exclusion(g) : -1;
-  if (excl >= 0) w_excl[excl]++;
+  int site = lr == SITE_AFTER || lr == SITE_SCENE || lr == SITE_BEFORE;
+  int excl = site && real && scene ? lod_exclusion(g) : -1;
+  if (excl >= 0 && lr == SITE_AFTER) w_excl[excl]++;
+  uint32_t lod_n = 0;
   if (s_on && excl == X_OK) {
-    lod_t *e = lod_slot(gob);
-    if (e) {
-      float d;
-      memcpy(&d, &dt, 4);
-      uint32_t phase = ((uint32_t)(uintptr_t)gob >> 4) + s_frame;
-      e->frame = s_frame;
-      if (phase % ANIM_LOD_N) {                 /* not its frame: processed, stamped, time kept */
-        e->acc += d;
-        o_process_gob(gob);
-        *(uint32_t *)(g + 0x1b8) = *(uint32_t *)(scene + 0x50);
-        w_lod_skipped++;
-        return;
+    if (lr == SITE_AFTER) {
+      lod_n = ANIM_LOD_N;
+    } else if (lr == SITE_SCENE && s_lod_offscreen) {
+      int (*in_view)(void *) = (*(int (***)(void *))gob)[0x1cc / 4];
+      if (!in_view(gob)) lod_n = ANIM_LOD_N;
+    } else if (lr == SITE_BEFORE && s_far_m > 0) {
+      const float *p = (const float *)(g + 0xa4), *c = (const float *)(kotor_mod.text_base + VIEW_CAM + 0x30);
+      float dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2], d2 = dx * dx + dy * dy + dz * dz;
+      if (SCENE_CPU_STATS) {
+        w_far_seen++;
+        if (d2 < w_near_m * w_near_m) w_near_m = __builtin_sqrtf(d2);
+        if (d2 > w_far_max_m * w_far_max_m) w_far_max_m = __builtin_sqrtf(d2);
       }
-      d += e->acc;
-      e->acc = 0;
-      memcpy(&dt, &d, 4);
-      w_lod_stepped++;
+      if (d2 > s_far_m * s_far_m) lod_n = ANIM_LOD_FAR_N;
     }
+  }
+  if (lod_n) {
+    if (lod_step(gob, g, scene, &dt, lod_n)) {
+      w_lod_skipped++;
+      if (lr == SITE_SCENE) w_lod_off++;
+      else if (lr == SITE_BEFORE) w_lod_far++;
+      return;
+    }
+    w_lod_stepped++;
   } else if (s_on && real && scene) {
     /* Animated from elsewhere (back in view, pulled by an attachment): the
      * time owed goes with it. */
@@ -381,6 +429,13 @@ void scene_cpu_on_swap(void) {
 #endif
   w_frames = 0; w_frame_us = 0; w_bsp_us = w_buckets_us = w_lights_us = 0;
   w_lights_calls = w_lights_src = w_lights_out = w_lights_dups = 0;
+  if (s_lod_offscreen || s_far_m > 0)
+    log_printf("[scene] trade-offs a frame: off-screen gobs skipped %.1f, distant drawn gobs skipped %.1f (beyond %.0f m; "
+               "drawn gobs %.1f, nearest %.1f m, farthest %.1f m)", w_lod_off / f, w_lod_far / f, (double)s_far_m,
+               w_far_seen / f, w_far_seen ? (double)w_near_m : 0.0, (double)w_far_max_m);
+  w_lod_off = w_lod_far = w_far_seen = 0;
+  w_near_m = 1e9f;
+  w_far_max_m = 0;
   w_lod_skipped = w_lod_stepped = 0;
   t0 = now;
   if (s_ab) {
@@ -427,6 +482,31 @@ void scene_cpu_install(void) {
   }
   if (SCENE_CPU_STATS)
     o_buckets = (void (*)(void *))take_slots("_ZN5Scene12DoGobBucketsEv", (uintptr_t)h_buckets, &n_buckets);
+  {
+    char b = '1';
+    SceUID f2 = sceIoOpen(DATA_PATH "/anim_offscreen.txt", SCE_O_RDONLY, 0);
+    if (f2 >= 0) { if (sceIoRead(f2, &b, 1) != 1) b = '1'; sceIoClose(f2); }
+    s_lod_offscreen = b != '0';
+    char buf[16] = { 0 };
+    f2 = sceIoOpen(DATA_PATH "/anim_far.txt", SCE_O_RDONLY, 0);
+    if (f2 >= 0) {
+      if (sceIoRead(f2, buf, sizeof buf - 1) > 0) {
+        float m = 0;
+        if (sscanf(buf, "%f", &m) == 1 && m >= 0) s_far_m = m;
+      }
+      sceIoClose(f2);
+    }
+    b = '1';
+    f2 = sceIoOpen(DATA_PATH "/anim_depth.txt", SCE_O_RDONLY, 0);
+    if (f2 >= 0) { if (sceIoRead(f2, &b, 1) != 1) b = '1'; sceIoClose(f2); }
+    float *d1 = (float *)so_symbol(&kotor_mod, "animdepthdist1"), *d2 = (float *)so_symbol(&kotor_mod, "animdepthdist2");
+    int depth = b != '0' && d1 && d2 && *d1 == 12.0f && *d2 == 30.0f;
+    if (depth) { *d1 = ANIM_DEPTH_DIST1; *d2 = ANIM_DEPTH_DIST2; }
+    log_printf("[scene] trade-offs: off-screen gobs every %d frames %s; drawn gobs beyond %.0f m every %d frames%s; "
+               "animation detail distances %s", ANIM_LOD_N, s_lod_offscreen ? "on" : "off (anim_offscreen 0)",
+               (double)s_far_m, ANIM_LOD_FAR_N, s_far_m > 0 ? "" : " (off: anim_far 0)",
+               depth ? "6 and 15 m (engine 12 and 30)" : "the engine's");
+  }
   s_on = 1;
   s_installed = 1;
   log_printf("[scene] armed: light setup %u slots, Gob::Animate %u (not-drawn gobs every %d frames)%s%s%s", n_setup,
