@@ -309,6 +309,31 @@ What is enabled by default:
 - About **4 GB free on `ux0:`** for the tested game data. The exact requirement
   depends on the Android release and optional restored-content files.
 
+### Optional: resuming after the PS button
+
+Suspending the game with the PS button invalidates every file it has open,
+the game archives among them, so the game usually breaks when you resume it.
+All ports built on this loader share the problem. TheFloW's
+[FdFix](https://github.com/TheOfficialFloW/FdFix/releases) plugin fixes it.
+Other ports list it as an install step too.
+
+1. Copy `fd_fix.skprx` next to `kubridge.skprx`.
+2. Add its path to the same `*KERNEL` section of taiHEN's `config.txt`, the
+   one that lists kubridge: `ux0:tai/config.txt`, or `ur0:tai/config.txt` when
+   there is no `ux0:tai/config.txt`. For example:
+
+   ```text
+   *KERNEL
+   ur0:tai/kubridge.skprx
+   ur0:tai/fd_fix.skprx
+   ```
+
+3. Reboot the Vita: kernel plugins load only at boot.
+
+Don't install FdFix if you use the rePatch plugin. If the Vita does not start
+normally afterwards, hold L while it boots to skip the plugins, then remove the
+line again.
+
 ### From Your Android Copy
 
 The port requires **version 2.0.4** of the Android app, and its **32-bit ARM**
@@ -575,6 +600,7 @@ suppress routine lines while preserving failures and panic crash dumps.
 | Symptom | Check |
 |---|---|
 | Immediate launch failure | Confirm `kubridge.skprx` is installed and enabled. |
+| The game breaks after resuming from the PS button | Install the optional FdFix plugin (see [Optional: resuming after the PS button](#optional-resuming-after-the-ps-button)). |
 | Permanent black screen before shaders | Confirm `ur0:data/libshacccg.suprx` exists. |
 | Black screen on a cache-enabled warm launch | Remove `ux0:data/shader_cache/KOTR00002/` and relaunch so the cache is rebuilt. If it repeats, use a cache-disabled recovery build and report `log.txt`. |
 | Missing game data | Confirm all five libraries, both exactly named OBB files, and the APK `assets/` directory exist under `ux0:data/kotor2/`. |
