@@ -309,8 +309,9 @@ What is enabled by default:
     looked up by the game thread at safe points of the drawing. The game
     thread waited 14.1 instead of 42.5 ms a frame for the AI, and the queued
     messages saved about 5 ms more.
-  - **Cheaper engine calls:** the engine's 112,000 calls to its own functions
-    go straight to them instead of through the shared library's call table
+  - **Cheaper engine calls:** about 97,000 of the engine's calls to its own
+    functions go straight to them instead of through the shared library's
+    call table
     (Telos: 62.2 against 67.8 ms frames; battle: 7–11% shorter). Action menus
     are rebuilt when something changes rather than every frame (1.6 against
     4.2 ms), and quaternion interpolation and name comparisons are 2–3 times
